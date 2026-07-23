@@ -234,3 +234,67 @@ class FundTestCase(TestCase):
         self.assertEqual(Transaction.objects.count(), 0) # all transactions deleted!
 
 
+class GlobalSearchTestCase(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.category_food = Category.objects.create(name="Food")
+        self.category_loan = Category.objects.create(name="Loan / Debt")
+
+        # 1. Income transaction
+        self.t1 = Transaction.objects.create(
+            date=date.today(),
+            amount=5000.00,
+            payment_mode='ACCOUNT',
+            transaction_type='INCOME',
+            description="Salary payment from Acme Corp"
+        )
+
+        # 2. Expense transaction
+        self.t2 = Transaction.objects.create(
+            date=date.today(),
+            amount=15.50,
+            payment_mode='CASH',
+            transaction_type='EXPENSE',
+            category=self.category_food,
+            description="Sushi lunch with friends"
+        )
+
+        # 3. Debt transaction
+        self.t3 = Transaction.objects.create(
+            date=date.today(),
+            amount=100.00,
+            payment_mode='CASH',
+            transaction_type='DEBT_TAKEN',
+            category=self.category_loan,
+            description="Borrow from John Doe"
+        )
+
+    def test_search_by_description(self):
+        # Search for "Sushi"
+        response = self.client.get('/api/search/?q=Sushi')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]['description'], "Sushi lunch with friends")
+        self.assertEqual(response.data[0]['type'], "EXPENSE")
+
+    def test_search_by_person_name(self):
+        # Search for "John Doe" (who is linked to Debt/Transaction)
+        response = self.client.get('/api/search/?q=John')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]['description'], "Borrow from John Doe")
+
+    def test_search_by_category(self):
+        # Search for "Food" category
+        response = self.client.get('/api/search/?q=Food')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]['category'], "Food")
+
+    def test_search_empty_query(self):
+        # Empty query should return empty list
+        response = self.client.get('/api/search/?q=')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+

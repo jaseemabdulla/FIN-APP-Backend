@@ -613,3 +613,108 @@ class FundExpenseViewSet(viewsets.ModelViewSet):
     queryset = FundExpense.objects.all().order_by('-date', '-id')
     serializer_class = FundExpenseSerializer
 
+
+from django.db.models import Q
+
+class GlobalSearchView(views.APIView):
+    def get(self, request):
+        q = request.query_params.get('q', '').strip()
+        if not q:
+            return response.Response([])
+
+        # 1. Search Transactions
+        txn_query = Q(description__icontains=q) | \
+                    Q(category__name__icontains=q) | \
+                    Q(related_debt__person_name__icontains=q) | \
+                    Q(related_debt__description__icontains=q) | \
+                    Q(related_fund__title__icontains=q) | \
+                    Q(related_fund__purpose__icontains=q) | \
+                    Q(related_fund__provider__icontains=q) | \
+                    Q(related_fund__notes__icontains=q) | \
+                    Q(related_fund__settlement_notes__icontains=q) | \
+                    Q(related_event__name__icontains=q)
+        
+        transactions = Transaction.objects.filter(txn_query).distinct().order_by('-date', '-id')[:100]
+
+        results = []
+        seen_txn_ids = set()
+
+        for txn in transactions:
+            seen_txn_ids.add(txn.id)
+            target = 'transaction'
+            target_id = txn.id
+            
+            # Check if debt related
+            debt_id = None
+            if txn.transaction_type in ['DEBT_TAKEN', 'DEBT_GIVEN'] and hasattr(txn, 'debt_entry'):
+                debt_id = txn.debt_entry.id
+            elif txn.related_debt:
+                debt_id = txn.related_debt.id
+                
+            if debt_id:
+                target = 'debt'
+                target_id = debt_id
+            elif txn.related_fund_id:
+                target = 'fund'
+                target_id = txn.related_fund_id
+                
+            results.append({
+                'id': txn.id,
+                'model': 'transaction',
+                'date': txn.date.strftime('%Y-%m-%d'),
+                'amount': float(txn.amount),
+                'type': txn.transaction_type,
+                'description': txn.description,
+                'category': txn.category.name if txn.category else '',
+                'target': target,
+                'target_id': target_id,
+                'target_date': txn.date.strftime('%Y-%m-%d')
+            })
+
+        # 2. Search Debts (standalone or unmatched)
+        debt_query = Q(person_name__icontains=q) | Q(description__icontains=q)
+        debts = Debt.objects.filter(debt_query).distinct()[:50]
+        
+        for debt in debts:
+            if debt.transaction and debt.transaction.id in seen_txn_ids:
+                continue
+            
+            results.append({
+                'id': debt.id,
+                'model': 'debt',
+                'date': debt.date.strftime('%Y-%m-%d'),
+                'amount': float(debt.amount),
+                'type': f"DEBT_{debt.debt_type}",
+                'description': f"Debt: {debt.person_name} - {debt.description}" if debt.description else f"Debt: {debt.person_name}",
+                'category': 'Loan / Debt',
+                'target': 'debt',
+                'target_id': debt.id,
+                'target_date': debt.date.strftime('%Y-%m-%d')
+            })
+
+        # 3. Search Funds (standalone or unmatched)
+        fund_query = Q(title__icontains=q) | Q(purpose__icontains=q) | Q(provider__icontains=q) | Q(notes__icontains=q) | Q(settlement_notes__icontains=q)
+        funds = Fund.objects.filter(fund_query).distinct()[:50]
+        
+        for fund in funds:
+            if fund.transaction and fund.transaction.id in seen_txn_ids:
+                continue
+            
+            results.append({
+                'id': fund.id,
+                'model': 'fund',
+                'date': fund.received_date.strftime('%Y-%m-%d'),
+                'amount': float(fund.initial_amount),
+                'type': 'FUND_MANAGEMENT_INC',
+                'description': f"Fund: {fund.title} (Provider: {fund.provider})",
+                'category': 'Fund Management',
+                'target': 'fund',
+                'target_id': fund.id,
+                'target_date': fund.received_date.strftime('%Y-%m-%d')
+            })
+
+        # Sort combined results by date descending, then id descending
+        results.sort(key=lambda x: (x['date'], x['id']), reverse=True)
+
+        return response.Response(results)
+
