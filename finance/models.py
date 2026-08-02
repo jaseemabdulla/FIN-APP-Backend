@@ -42,6 +42,7 @@ class Transaction(models.Model):
     transaction_type = models.CharField(max_length=20, choices=TYPE_CHOICES)
     category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, blank=True)
     description = models.CharField(max_length=255, blank=True)
+    ledger = models.ForeignKey('Ledger', on_delete=models.SET_NULL, null=True, blank=True, related_name='transactions')
     related_debt = models.ForeignKey('Debt', on_delete=models.SET_NULL, null=True, blank=True, related_name='repayments')
     related_event = models.ForeignKey('Event', on_delete=models.SET_NULL, null=True, blank=True, related_name='transactions')
     related_fund = models.ForeignKey('Fund', on_delete=models.SET_NULL, null=True, blank=True, related_name='account_transactions')
@@ -61,6 +62,15 @@ class BalanceSnapshot(models.Model):
     def __str__(self):
         return f"Balance for {self.date}"
 
+class Ledger(models.Model):
+    name = models.CharField(max_length=100, unique=True)
+    phone = models.CharField(max_length=20, blank=True, default='')
+    email = models.EmailField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.name
+
 class Debt(models.Model):
     DEBT_TYPE_CHOICES = [
         ('TAKEN', 'Taken'),
@@ -68,6 +78,7 @@ class Debt(models.Model):
     ]
 
     person_name = models.CharField(max_length=100)
+    ledger = models.ForeignKey(Ledger, on_delete=models.PROTECT, null=True, blank=True, related_name='debts')
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     debt_type = models.CharField(max_length=10, choices=DEBT_TYPE_CHOICES)
     payment_mode = models.CharField(max_length=10, choices=Transaction.PAYMENT_MODE_CHOICES, default='CASH')
@@ -76,6 +87,11 @@ class Debt(models.Model):
 
     date = models.DateField(default=date.today)
     transaction = models.OneToOneField('Transaction', on_delete=models.CASCADE, null=True, blank=True, related_name='debt_entry')
+
+    def save(self, *args, **kwargs):
+        if self.ledger:
+            self.person_name = self.ledger.name
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.person_name} - {self.amount} ({self.debt_type})"

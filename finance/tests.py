@@ -2,7 +2,7 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 from rest_framework import status
 from django.db.models import Sum
-from finance.models import Debt, Transaction, Category
+from finance.models import Debt, Transaction, Category, Ledger
 from datetime import date, timedelta
 
 class DebtSettlePersonTestCase(TestCase):
@@ -296,5 +296,146 @@ class GlobalSearchTestCase(TestCase):
         response = self.client.get('/api/search/?q=')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data, [])
+
+
+class LedgerTestCase(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.category = Category.objects.create(name="Loan / Debt")
+
+    def test_ledger_crud(self):
+        # 1. Create Ledger
+        create_data = {
+            "name": "Jane Smith",
+            "phone": "+1234567890",
+            "email": "jane@example.com"
+        }
+        res_create = self.client.post('/api/ledgers/', create_data, format='json')
+        self.assertEqual(res_create.status_code, status.HTTP_201_CREATED)
+        ledger_id = res_create.data['id']
+        self.assertEqual(res_create.data['name'], "Jane Smith")
+
+        # 2. Read Ledgers
+        res_list = self.client.get('/api/ledgers/')
+        self.assertEqual(res_list.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res_list.data), 1)
+
+        # 3. Update Ledger
+        update_data = {
+            "name": "Jane Doe",
+            "phone": "+1987654321",
+            "email": "jane.doe@example.com"
+        }
+        res_update = self.client.put(f'/api/ledgers/{ledger_id}/', update_data, format='json')
+        self.assertEqual(res_update.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_update.data['name'], "Jane Doe")
+
+        # 4. Delete Ledger (empty ledger, should succeed)
+        res_delete = self.client.delete(f'/api/ledgers/{ledger_id}/')
+        self.assertEqual(res_delete.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(Ledger.objects.count(), 0)
+
+    def test_debt_linking_and_compatibility(self):
+        ledger = Ledger.objects.create(name="Bob Johnson", phone="555-0199")
+        
+        # Create Debt linked to ledger
+        debt_data = {
+            "ledger": ledger.id,
+            "amount": "250.00",
+            "debt_type": "TAKEN",
+            "date": "2026-07-24",
+            "payment_mode": "CASH",
+            "description": "Borrow for tools"
+        }
+        response = self.client.post('/api/debts/', debt_data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['ledger'], ledger.id)
+        
+        # Verify compatibility: person_name must be populated with ledger name
+        self.assertEqual(response.data['person_name'], "Bob Johnson")
+        
+        debt = Debt.objects.get(id=response.data['id'])
+        self.assertEqual(debt.person_name, "Bob Johnson")
+        self.assertEqual(debt.ledger, ledger)
+
+    def test_ledger_deletion_protection(self):
+        ledger = Ledger.objects.create(name="Charlie Brown")
+        Debt.objects.create(
+            ledger=ledger,
+            person_name=ledger.name,
+            amount=50.00,
+            debt_type="GIVEN",
+            date=date.today(),
+            payment_mode="CASH"
+        )
+        
+        # Attempting to delete ledger should fail with validation error (400 Bad Request)
+        response = self.client.delete(f'/api/ledgers/{ledger.id}/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Cannot delete ledger", response.data['detail'])
+        
+        # Verify ledger still exists
+        self.assertTrue(Ledger.objects.filter(id=ledger.id).exists())
+
+    def test_global_search_by_ledger_name(self):
+        ledger = Ledger.objects.create(name="Unique Ledger Person Name")
+        Debt.objects.create(
+            ledger=ledger,
+            amount=10.00,
+            debt_type="TAKEN",
+            date=date.today(),
+            payment_mode="CASH"
+        )
+        
+        response = self.client.get('/api/search/?q=Unique')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(len(response.data) > 0)
+        self.assertIn("Unique Ledger Person Name", response.data[0]['description'])
+
+    def test_transaction_ledger_linking_and_sync(self):
+        ledger1 = Ledger.objects.create(name="Ledger One")
+        ledger2 = Ledger.objects.create(name="Ledger Two")
+        
+        # 1. Create a transaction with type DEBT_TAKEN and a ledger
+        tx_data = {
+            "date": "2026-08-01",
+            "amount": "100.00",
+            "payment_mode": "CASH",
+            "transaction_type": "DEBT_TAKEN",
+            "category": self.category.id,
+            "description": "Borrow cash",
+            "ledger": ledger1.id
+        }
+        response = self.client.post('/api/transactions/', tx_data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['ledger'], ledger1.id)
+        
+        # Verify Debt was automatically created and linked to ledger1
+        debt = Debt.objects.get(transaction_id=response.data['id'])
+        self.assertEqual(debt.ledger, ledger1)
+        self.assertEqual(debt.person_name, "Ledger One")
+        self.assertEqual(float(debt.amount), 100.00)
+        
+        # 2. Update the transaction's ledger to ledger2 and change some values
+        update_data = {
+            "date": "2026-08-02",
+            "amount": "150.00",
+            "payment_mode": "ACCOUNT",
+            "transaction_type": "DEBT_TAKEN",
+            "category": self.category.id,
+            "description": "Borrow cash edited",
+            "ledger": ledger2.id
+        }
+        res_update = self.client.put(f"/api/transactions/{response.data['id']}/", update_data, format='json')
+        self.assertEqual(res_update.status_code, status.HTTP_200_OK)
+        
+        # Verify the linked Debt was updated in sync
+        debt.refresh_from_db()
+        self.assertEqual(debt.ledger, ledger2)
+        self.assertEqual(debt.person_name, "Ledger Two")
+        self.assertEqual(float(debt.amount), 150.00)
+        self.assertEqual(str(debt.date), "2026-08-02")
+        self.assertEqual(debt.payment_mode, "ACCOUNT")
+
 
 

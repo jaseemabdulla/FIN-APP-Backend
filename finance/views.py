@@ -2,8 +2,8 @@ from django.shortcuts import render
 from rest_framework import viewsets, views, response, status
 from rest_framework.decorators import action
 from django.db.models import Sum
-from .models import Transaction, BalanceSnapshot, Debt, Category, Event, Fund, FundAddition, FundExpense
-from .serializers import TransactionSerializer, BalanceSnapshotSerializer, DebtSerializer, CategorySerializer, EventSerializer, FundSerializer, FundAdditionSerializer, FundExpenseSerializer
+from .models import Transaction, BalanceSnapshot, Debt, Category, Event, Fund, FundAddition, FundExpense, Ledger
+from .serializers import TransactionSerializer, BalanceSnapshotSerializer, DebtSerializer, CategorySerializer, EventSerializer, FundSerializer, FundAdditionSerializer, FundExpenseSerializer, LedgerSerializer
 from datetime import datetime, date, timedelta
 import csv
 from django.http import HttpResponse
@@ -12,6 +12,21 @@ from .utils import generate_pdf_report, generate_yearly_pdf_report, generate_deb
 class CategoryViewSet(viewsets.ModelViewSet):
     queryset = Category.objects.all().order_by('name')
     serializer_class = CategorySerializer
+
+from django.db.models import ProtectedError
+from rest_framework.exceptions import ValidationError
+
+class LedgerViewSet(viewsets.ModelViewSet):
+    queryset = Ledger.objects.all().order_by('name')
+    serializer_class = LedgerSerializer
+
+    def destroy(self, request, *args, **kwargs):
+        try:
+            return super().destroy(request, *args, **kwargs)
+        except ProtectedError:
+            raise ValidationError({
+                "detail": "Cannot delete ledger because it is associated with existing debt records."
+            })
 
 class EventViewSet(viewsets.ModelViewSet):
     queryset = Event.objects.all().order_by('-date', '-id')
@@ -129,7 +144,8 @@ class DebtViewSet(viewsets.ModelViewSet):
                     transaction_type=txn_type,
                     category=loan_category,
                     description=txn_desc,
-                    related_debt=debt
+                    related_debt=debt,
+                    ledger=debt.ledger
                 )
                 created_transactions.append(txn)
 
@@ -626,6 +642,7 @@ class GlobalSearchView(views.APIView):
         txn_query = Q(description__icontains=q) | \
                     Q(category__name__icontains=q) | \
                     Q(related_debt__person_name__icontains=q) | \
+                    Q(related_debt__ledger__name__icontains=q) | \
                     Q(related_debt__description__icontains=q) | \
                     Q(related_fund__title__icontains=q) | \
                     Q(related_fund__purpose__icontains=q) | \
@@ -672,7 +689,7 @@ class GlobalSearchView(views.APIView):
             })
 
         # 2. Search Debts (standalone or unmatched)
-        debt_query = Q(person_name__icontains=q) | Q(description__icontains=q)
+        debt_query = Q(person_name__icontains=q) | Q(description__icontains=q) | Q(ledger__name__icontains=q)
         debts = Debt.objects.filter(debt_query).distinct()[:50]
         
         for debt in debts:

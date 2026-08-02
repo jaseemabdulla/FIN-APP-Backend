@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Transaction, BalanceSnapshot, Debt, Category, Event, Fund, FundAddition, FundExpense
+from .models import Transaction, BalanceSnapshot, Debt, Category, Event, Fund, FundAddition, FundExpense, Ledger
 from django.db.models import Sum
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -12,10 +12,22 @@ class TransactionSerializer(serializers.ModelSerializer):
     event_name = serializers.CharField(source='related_event.name', read_only=True)
     related_fund_title = serializers.CharField(source='related_fund.title', read_only=True)
     debt_description = serializers.CharField(required=False, allow_blank=True, default='')
+    ledger_name = serializers.SerializerMethodField()
     
     class Meta:
         model = Transaction
         fields = '__all__'
+
+    def get_ledger_name(self, obj):
+        if obj.ledger:
+            return obj.ledger.name
+        if obj.related_debt and obj.related_debt.ledger:
+            return obj.related_debt.ledger.name
+        if obj.related_debt and obj.related_debt.person_name:
+            return obj.related_debt.person_name
+        if obj.transaction_type in ['DEBT_TAKEN', 'DEBT_GIVEN'] and obj.description:
+            return obj.description
+        return ''
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
@@ -51,15 +63,33 @@ class BalanceSnapshotSerializer(serializers.ModelSerializer):
         model = BalanceSnapshot
         fields = '__all__'
 
+class LedgerSerializer(serializers.ModelSerializer):
+    debt_count = serializers.IntegerField(source='debts.count', read_only=True)
+
+    class Meta:
+        model = Ledger
+        fields = '__all__'
+
 class DebtSerializer(serializers.ModelSerializer):
     remaining_amount = serializers.SerializerMethodField()
     total_repaid = serializers.SerializerMethodField()
     repayments = TransactionSerializer(many=True, read_only=True)
     cleared_date = serializers.SerializerMethodField()
+    person_name = serializers.CharField(required=False)
+    ledger_details = LedgerSerializer(source='ledger', read_only=True)
 
     class Meta:
         model = Debt
         fields = '__all__'
+
+    def validate(self, attrs):
+        ledger = attrs.get('ledger')
+        if ledger:
+            attrs['person_name'] = ledger.name
+        elif not attrs.get('person_name'):
+            if not self.instance or not self.instance.person_name:
+                raise serializers.ValidationError({"person_name": "This field is required if ledger is not provided."})
+        return attrs
 
     def get_total_repaid(self, obj):
         return obj.repayments.aggregate(Sum('amount'))['amount__sum'] or 0

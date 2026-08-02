@@ -100,6 +100,7 @@ def create_debt_from_transaction(sender, instance, created, **kwargs):
             debt_type=debt_type,
             payment_mode=instance.payment_mode,
             person_name=instance.description,
+            ledger=instance.ledger,
             transaction=instance
         )
 
@@ -180,6 +181,10 @@ def sync_transaction_on_debt_update(sender, instance, created, **kwargs):
         if txn.transaction_type != expected_type:
             txn.transaction_type = expected_type
             needs_save = True
+
+        if txn.ledger != instance.ledger:
+            txn.ledger = instance.ledger
+            needs_save = True
             
         if needs_save:
             txn.save()
@@ -200,3 +205,46 @@ def delete_transaction_on_debt_delete(sender, instance, **kwargs):
                 instance.transaction.delete()
         except Transaction.DoesNotExist:
             pass
+
+@receiver(post_save, sender=Transaction)
+def sync_debt_on_transaction_update(sender, instance, created, **kwargs):
+    """
+    If a Transaction is updated and is linked to a Debt (via reverse relation),
+    sync the ledger, description, amount, date, and payment mode back to the Debt.
+    """
+    if created:
+        return
+
+    if instance.transaction_type in ['DEBT_TAKEN', 'DEBT_GIVEN'] and hasattr(instance, 'debt_entry'):
+        debt = instance.debt_entry
+        needs_save = False
+        
+        expected_debt_type = 'TAKEN' if instance.transaction_type == 'DEBT_TAKEN' else 'GIVEN'
+        
+        if debt.ledger != instance.ledger:
+            debt.ledger = instance.ledger
+            needs_save = True
+            
+        expected_person_name = instance.ledger.name if instance.ledger else instance.description
+        if debt.person_name != expected_person_name:
+            debt.person_name = expected_person_name
+            needs_save = True
+            
+        if debt.amount != instance.amount:
+            debt.amount = instance.amount
+            needs_save = True
+            
+        if debt.date != instance.date:
+            debt.date = instance.date
+            needs_save = True
+            
+        if debt.payment_mode != instance.payment_mode:
+            debt.payment_mode = instance.payment_mode
+            needs_save = True
+            
+        if debt.debt_type != expected_debt_type:
+            debt.debt_type = expected_debt_type
+            needs_save = True
+            
+        if needs_save:
+            debt.save()
