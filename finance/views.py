@@ -269,29 +269,19 @@ class MonthlyReportView(views.APIView):
             remaining_cash = 0
             remaining_account = 0
 
-        # Income Category wise
-        income_stats = txns.filter(transaction_type='INCOME', related_debt__isnull=True).values('category__name').annotate(total=Sum('amount')).order_by('-total')
+        # Dynamically group category breakdown by transaction type and category
+        stats = txns.values('transaction_type', 'category__name').annotate(total=Sum('amount')).order_by('transaction_type', '-total')
         
         category_stats_formatted = []
-        for item in income_stats:
+        for item in stats:
+            txn_type = item['transaction_type']
             cat_name = item['category__name']
-            cat_txns = txns.filter(transaction_type='INCOME', category__name=cat_name, related_debt__isnull=True).order_by('-date')
+            
+            # Fetch the transactions for this specific type and category
+            cat_txns = txns.filter(transaction_type=txn_type, category__name=cat_name).order_by('-date')
             category_stats_formatted.append({
-                "category": cat_name if cat_name else 'Uncategorized', 
-                "type": "INCOME",
-                "total": item['total'],
-                "transactions": TransactionSerializer(cat_txns, many=True).data
-            })
-
-        # Expense Category wise
-        expense_stats = txns.filter(transaction_type__in=['EXPENSE', 'INVESTMENT'], related_debt__isnull=True).values('category__name').annotate(total=Sum('amount')).order_by('-total')
-        
-        for item in expense_stats:
-            cat_name = item['category__name']
-            cat_txns = txns.filter(transaction_type__in=['EXPENSE', 'INVESTMENT'], category__name=cat_name, related_debt__isnull=True).order_by('-date')
-            category_stats_formatted.append({
-                "category": cat_name if cat_name else 'Uncategorized', 
-                "type": "EXPENSE",
+                "category": cat_name if cat_name else 'Uncategorized',
+                "type": txn_type,
                 "total": item['total'],
                 "transactions": TransactionSerializer(cat_txns, many=True).data
             })
