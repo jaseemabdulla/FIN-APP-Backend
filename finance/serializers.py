@@ -6,6 +6,7 @@ class CategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Category
         fields = '__all__'
+        read_only_fields = ['profile']
 
 class TransactionSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True)
@@ -17,6 +18,7 @@ class TransactionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Transaction
         fields = '__all__'
+        read_only_fields = ['profile']
 
     def get_ledger_name(self, obj):
         if obj.ledger:
@@ -46,6 +48,7 @@ class EventSerializer(serializers.ModelSerializer):
     class Meta:
         model = Event
         fields = '__all__'
+        read_only_fields = ['profile']
 
     def get_amount_received(self, obj):
         return obj.transactions.filter(transaction_type='INCOME').aggregate(Sum('amount'))['amount__sum'] or 0
@@ -62,6 +65,7 @@ class BalanceSnapshotSerializer(serializers.ModelSerializer):
     class Meta:
         model = BalanceSnapshot
         fields = '__all__'
+        read_only_fields = ['profile']
 
 class LedgerSerializer(serializers.ModelSerializer):
     debt_count = serializers.IntegerField(source='debts.count', read_only=True)
@@ -69,6 +73,7 @@ class LedgerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Ledger
         fields = '__all__'
+        read_only_fields = ['profile']
 
 class DebtSerializer(serializers.ModelSerializer):
     remaining_amount = serializers.SerializerMethodField()
@@ -81,6 +86,7 @@ class DebtSerializer(serializers.ModelSerializer):
     class Meta:
         model = Debt
         fields = '__all__'
+        read_only_fields = ['profile']
 
     def validate(self, attrs):
         ledger = attrs.get('ledger')
@@ -110,6 +116,7 @@ class FundAdditionSerializer(serializers.ModelSerializer):
     class Meta:
         model = FundAddition
         fields = '__all__'
+        read_only_fields = ['profile']
 
 class FundExpenseSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True)
@@ -117,6 +124,7 @@ class FundExpenseSerializer(serializers.ModelSerializer):
     class Meta:
         model = FundExpense
         fields = '__all__'
+        read_only_fields = ['profile']
 
 class FundSerializer(serializers.ModelSerializer):
     additions = FundAdditionSerializer(many=True, read_only=True)
@@ -131,6 +139,7 @@ class FundSerializer(serializers.ModelSerializer):
     class Meta:
         model = Fund
         fields = '__all__'
+        read_only_fields = ['profile']
 
     def get_total_received(self, obj):
         initial = obj.initial_amount or 0

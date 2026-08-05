@@ -9,16 +9,30 @@ import csv
 from django.http import HttpResponse
 from .utils import generate_pdf_report, generate_yearly_pdf_report, generate_debt_pdf_report, generate_event_pdf_report
 
+from django.db.models import Q
+
 class CategoryViewSet(viewsets.ModelViewSet):
-    queryset = Category.objects.all().order_by('name')
+    queryset = Category.objects.all()
     serializer_class = CategorySerializer
+
+    def get_queryset(self):
+        return Category.objects.filter(profile=self.request.user.profile).order_by('name')
+
+    def perform_create(self, serializer):
+        serializer.save(profile=self.request.user.profile)
 
 from django.db.models import ProtectedError
 from rest_framework.exceptions import ValidationError
 
 class LedgerViewSet(viewsets.ModelViewSet):
-    queryset = Ledger.objects.all().order_by('name')
+    queryset = Ledger.objects.all()
     serializer_class = LedgerSerializer
+
+    def get_queryset(self):
+        return Ledger.objects.filter(profile=self.request.user.profile).order_by('name')
+
+    def perform_create(self, serializer):
+        serializer.save(profile=self.request.user.profile)
 
     def destroy(self, request, *args, **kwargs):
         try:
@@ -29,15 +43,21 @@ class LedgerViewSet(viewsets.ModelViewSet):
             })
 
 class EventViewSet(viewsets.ModelViewSet):
-    queryset = Event.objects.all().order_by('-date', '-id')
+    queryset = Event.objects.all()
     serializer_class = EventSerializer
 
+    def get_queryset(self):
+        return Event.objects.filter(profile=self.request.user.profile).order_by('-date', '-id')
+
+    def perform_create(self, serializer):
+        serializer.save(profile=self.request.user.profile)
+
 class TransactionViewSet(viewsets.ModelViewSet):
-    queryset = Transaction.objects.all().order_by('-date', '-id')
+    queryset = Transaction.objects.all()
     serializer_class = TransactionSerializer
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = Transaction.objects.filter(profile=self.request.user.profile).order_by('-date', '-id')
         date_param = self.request.query_params.get('date')
         if date_param:
             queryset = queryset.filter(date=date_param)
@@ -45,7 +65,7 @@ class TransactionViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         debt_description = serializer.validated_data.pop('debt_description', '')
-        instance = serializer.save()
+        instance = serializer.save(profile=self.request.user.profile)
         if hasattr(instance, 'debt_entry') and debt_description:
             debt = instance.debt_entry
             debt.description = debt_description
@@ -60,12 +80,18 @@ class TransactionViewSet(viewsets.ModelViewSet):
             debt.save()
 
 class DebtViewSet(viewsets.ModelViewSet):
-    queryset = Debt.objects.all().order_by('-date')
+    queryset = Debt.objects.all()
     serializer_class = DebtSerializer
+
+    def get_queryset(self):
+        return Debt.objects.filter(profile=self.request.user.profile).order_by('-date')
+
+    def perform_create(self, serializer):
+        serializer.save(profile=self.request.user.profile)
 
     @action(detail=False, methods=['get'], url_path='people')
     def people(self, request):
-        names = Debt.objects.values_list('person_name', flat=True).distinct()
+        names = Debt.objects.filter(profile=request.user.profile).values_list('person_name', flat=True).distinct()
         clean_names = sorted(list(set([name.strip() for name in names if name.strip()])))
         return response.Response(clean_names)
 
@@ -98,6 +124,7 @@ class DebtViewSet(viewsets.ModelViewSet):
                 return response.Response({"error": "Invalid date format"}, status=status.HTTP_400_BAD_REQUEST)
 
         active_debts = Debt.objects.filter(
+            profile=request.user.profile,
             person_name=person_name,
             debt_type=debt_type,
             is_cleared=False
@@ -112,9 +139,9 @@ class DebtViewSet(viewsets.ModelViewSet):
         payment_remaining = amount
 
         # Fetch Category
-        loan_category = Category.objects.filter(name='Loan / Debt').first()
+        loan_category = Category.objects.filter(profile=request.user.profile, name='Loan / Debt').first()
         if not loan_category:
-            loan_category = Category.objects.filter(name__icontains='loan').first()
+            loan_category = Category.objects.filter(profile=request.user.profile, name__icontains='loan').first()
 
         txn_type = 'DEBT_TAKEN_RETURN' if debt_type == 'TAKEN' else 'DEBT_GIVEN_RETURN'
 
@@ -138,6 +165,7 @@ class DebtViewSet(viewsets.ModelViewSet):
                     txn_desc += f" - {description}"
 
                 txn = Transaction.objects.create(
+                    profile=request.user.profile,
                     date=txn_date,
                     amount=to_apply,
                     payment_mode=payment_mode,
@@ -169,25 +197,30 @@ class DailyReportView(views.APIView):
             return response.Response({"error": "Invalid date format"}, status=status.HTTP_400_BAD_REQUEST)
 
         # Transactions
-        transactions = Transaction.objects.filter(date=target_date)
+        transactions = Transaction.objects.filter(
+            profile=request.user.profile,
+            date=target_date
+        )
         txn_serializer = TransactionSerializer(transactions, many=True)
 
         # Closing Balance (Snapshot of today)
-        try:
-            closing_snapshot = BalanceSnapshot.objects.get(date=target_date)
+        closing_snapshot = BalanceSnapshot.objects.filter(
+            profile=request.user.profile,
+            date=target_date
+        ).first()
+        
+        if closing_snapshot:
             closing_data = {
                 "cash": closing_snapshot.cash_in_hand,
                 "account": closing_snapshot.cash_in_account,
                 "total": closing_snapshot.total_balance
             }
-        except BalanceSnapshot.DoesNotExist:
-            # If no snapshot, maybe no txns today? check previous
+        else:
             closing_data = {"cash": 0, "account": 0, "total": 0}
-            # Look for last available snapshot? 
-            # Ideally signal ensures snapshot exists if txns exist.
-            # If no txns, snapshot might not exist if we only create for active days.
-            # Fallback to latest previous snapshot
-            last_snapshot = BalanceSnapshot.objects.filter(date__lte=target_date).order_by('-date').first()
+            last_snapshot = BalanceSnapshot.objects.filter(
+                profile=request.user.profile,
+                date__lte=target_date
+            ).order_by('-date').first()
             if last_snapshot:
                  closing_data = {
                     "cash": last_snapshot.cash_in_hand,
@@ -197,7 +230,10 @@ class DailyReportView(views.APIView):
 
         # Opening Balance (Snapshot of yesterday)
         prev_date = target_date - timedelta(days=1)
-        prev_snapshot = BalanceSnapshot.objects.filter(date__lte=prev_date).order_by('-date').first()
+        prev_snapshot = BalanceSnapshot.objects.filter(
+            profile=request.user.profile,
+            date__lte=prev_date
+        ).order_by('-date').first()
         opening_data = {"cash": 0, "account": 0, "total": 0}
         if prev_snapshot:
             opening_data = {
@@ -232,7 +268,11 @@ class MonthlyReportView(views.APIView):
         except:
             return response.Response({"error": "Invalid year/month"}, status=status.HTTP_400_BAD_REQUEST)
 
-        txns = Transaction.objects.filter(date__year=year, date__month=month)
+        txns = Transaction.objects.filter(
+            profile=request.user.profile,
+            date__year=year,
+            date__month=month
+        )
 
         total_income = txns.filter(transaction_type='INCOME', related_debt__isnull=True).aggregate(Sum('amount'))['amount__sum'] or 0
         total_expense = txns.filter(transaction_type='EXPENSE', related_debt__isnull=True).aggregate(Sum('amount'))['amount__sum'] or 0
@@ -259,7 +299,11 @@ class MonthlyReportView(views.APIView):
         last_day = calendar.monthrange(year, month)[1]
         target_date = date(year, month, last_day)
 
-        closing_snapshot = BalanceSnapshot.objects.filter(date__lte=target_date).order_by('-date').first()
+        closing_snapshot = BalanceSnapshot.objects.filter(
+            profile=request.user.profile,
+            date__lte=target_date
+        ).order_by('-date').first()
+
         if closing_snapshot:
             remaining_amount = closing_snapshot.total_balance
             remaining_cash = closing_snapshot.cash_in_hand
@@ -294,21 +338,29 @@ class MonthlyReportView(views.APIView):
         
         debt_txns = txns.filter(transaction_type__in=['DEBT_TAKEN', 'DEBT_GIVEN', 'DEBT_TAKEN_RETURN', 'DEBT_GIVEN_RETURN']).order_by('-date')
         debt_serializer = TransactionSerializer(debt_txns, many=True)
-
+        
         return response.Response({
-            "year": year,
             "month": month,
+            "year": year,
             "total_income": total_income,
             "total_expense": total_expense,
             "total_investment": total_investment,
             "net_savings": net_savings,
             "total_credit": total_credit,
             "total_debit": total_debit,
-            "total_spent": total_debit,
+            "remaining_balance": remaining_amount,
             "remaining_amount": remaining_amount,
             "remaining_cash": remaining_cash,
             "remaining_account": remaining_account,
+            "category_stats": category_stats_formatted,
             "category_breakdown": category_stats_formatted,
+            "debts": {
+                "total_taken": debt_taken_total,
+                "total_given": debt_given_total,
+                "total_taken_returned": debt_taken_return_total,
+                "total_given_returned": debt_given_return_total,
+                "transactions": debt_serializer.data
+            },
             "debt_breakdown": {
                 "debt_taken": debt_taken_total,
                 "debt_given": debt_given_total,
@@ -332,7 +384,11 @@ class ExportMonthlyCSVView(views.APIView):
         except:
             return response.Response({"error": "Invalid year/month"}, status=status.HTTP_400_BAD_REQUEST)
 
-        txns = Transaction.objects.filter(date__year=year, date__month=month).order_by('date')
+        txns = Transaction.objects.filter(
+            profile=request.user.profile,
+            date__year=year,
+            date__month=month
+        ).order_by('date')
 
         response = HttpResponse(content_type='text/csv')
         response['Content-Disposition'] = f'attachment; filename="transactions_{year}_{month}.csv"'
@@ -358,7 +414,9 @@ class ExportPDFReportView(views.APIView):
         report_type = request.query_params.get('type', 'monthly') # daily, weekly, monthly, yearly, custom
         
         # Default Filter
-        queryset = Transaction.objects.all().order_by('date')
+        queryset = Transaction.objects.filter(
+            profile=request.user.profile
+        ).order_by('date')
         title = "Financial Report"
         date_range = ""
 
@@ -407,7 +465,9 @@ class ExportPDFReportView(views.APIView):
                 date_range = f"{start_week} to {end_week}"
 
             elif report_type == 'debt':
-                queryset = Debt.objects.all().order_by('-date')
+                queryset = Debt.objects.filter(
+                    profile=request.user.profile
+                ).order_by('-date')
                 # Optional: Filter by status if needed
                 status_filter = request.query_params.get('status')
                 if status_filter == 'active':
@@ -420,10 +480,12 @@ class ExportPDFReportView(views.APIView):
                 if not event_id:
                     return response.Response({"error": "event_id is required for event report"}, status=status.HTTP_400_BAD_REQUEST)
                 try:
-                    event = Event.objects.get(id=event_id)
+                    event = Event.objects.filter(
+                        profile=request.user.profile
+                    ).get(id=event_id)
                 except Event.DoesNotExist:
                     return response.Response({"error": "event not found"}, status=status.HTTP_404_NOT_FOUND)
-                queryset = Transaction.objects.filter(related_event=event).order_by('date')
+                queryset = Transaction.objects.filter(profile=request.user.profile, related_event=event).order_by('date')
                 title = event.name
                 date_range = str(event.date)
 
@@ -449,7 +511,11 @@ class ExportPDFReportView(views.APIView):
             report_dates = queryset.values_list('date', flat=True).distinct()
             
             for d in report_dates:
-                closing_snapshot = BalanceSnapshot.objects.filter(date__lte=d).order_by('-date').first()
+                closing_snapshot = BalanceSnapshot.objects.filter(
+                    profile=request.user.profile,
+                    date__lte=d
+                ).order_by('-date').first()
+
                 if closing_snapshot:
                     closing_data = {
                         'total': closing_snapshot.total_balance,
@@ -459,7 +525,11 @@ class ExportPDFReportView(views.APIView):
                 else:
                     closing_data = {'total': 0, 'cash': 0, 'account': 0}
                 
-                opening_snapshot = BalanceSnapshot.objects.filter(date__lt=d).order_by('-date').first()
+                opening_snapshot = BalanceSnapshot.objects.filter(
+                    profile=request.user.profile,
+                    date__lt=d
+                ).order_by('-date').first()
+
                 if opening_snapshot:
                     opening_data = {
                         'total': opening_snapshot.total_balance,
@@ -483,8 +553,9 @@ class ExportPDFReportView(views.APIView):
 class AppInitView(views.APIView):
     def get(self, request):
         # Check if the app is initialized
-        # We consider initialized if there is at least one transaction or debt
-        is_initialized = Transaction.objects.exists() or Debt.objects.exists()
+        # We consider initialized if there is at least one transaction or debt for this profile
+        profile = request.user.profile
+        is_initialized = Transaction.objects.filter(profile=profile).exists() or Debt.objects.filter(profile=profile).exists()
         return response.Response({"initialized": is_initialized})
 
     def post(self, request):
@@ -504,14 +575,17 @@ class AppInitView(views.APIView):
             'Food', 'Travel', 'Medical', 'Shopping', 'Recharge / Internet',
             'Charity', 'Loan / Debt', 'Investment', 'Miscellaneous'
         ]
-        for cat_name in default_categories:
-            Category.objects.get_or_create(name=cat_name)
+        profile = request.user.profile
 
-        misc_category, _ = Category.objects.get_or_create(name='Miscellaneous')
+        for cat_name in default_categories:
+            Category.objects.get_or_create(name=cat_name, defaults={'profile': profile})
+
+        misc_category, _ = Category.objects.get_or_create(name='Miscellaneous', defaults={'profile': profile})
 
         # Create Initial Transactions
         # We create them even if 0 to ensure the app is marked as "initialized" (Transaction.objects.exists() becomes True)
         Transaction.objects.create(
+            profile=profile,
             date=initial_date,
             amount=initial_account,
             payment_mode='ACCOUNT',
@@ -521,6 +595,7 @@ class AppInitView(views.APIView):
         )
         
         Transaction.objects.create(
+            profile=profile,
             date=initial_date,
             amount=initial_cash,
             payment_mode='CASH',
@@ -532,8 +607,14 @@ class AppInitView(views.APIView):
         return response.Response({"message": "App initialized successfully", "initialized": True})
 
 class FundViewSet(viewsets.ModelViewSet):
-    queryset = Fund.objects.all().order_by('-received_date', '-id')
+    queryset = Fund.objects.all()
     serializer_class = FundSerializer
+
+    def get_queryset(self):
+        return Fund.objects.filter(profile=self.request.user.profile).order_by('-received_date', '-id')
+
+    def perform_create(self, serializer):
+        serializer.save(profile=self.request.user.profile)
 
     @action(detail=True, methods=['post'], url_path='settle')
     def settle(self, request, pk=None):
@@ -589,14 +670,15 @@ class FundViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='reports')
     def reports(self, request):
-        active_funds = Fund.objects.filter(status='ACTIVE')
-        settled_funds = Fund.objects.filter(status='SETTLED')
+        profile = request.user.profile
+        active_funds = Fund.objects.filter(profile=profile, status='ACTIVE')
+        settled_funds = Fund.objects.filter(profile=profile, status='SETTLED')
 
-        fund_initial_sum = Fund.objects.aggregate(Sum('initial_amount'))['initial_amount__sum'] or 0
-        additions_sum = FundAddition.objects.aggregate(Sum('amount'))['amount__sum'] or 0
+        fund_initial_sum = Fund.objects.filter(profile=profile).aggregate(Sum('initial_amount'))['initial_amount__sum'] or 0
+        additions_sum = FundAddition.objects.filter(profile=profile).aggregate(Sum('amount'))['amount__sum'] or 0
         total_received = fund_initial_sum + additions_sum
 
-        total_spent = FundExpense.objects.aggregate(Sum('amount'))['amount__sum'] or 0
+        total_spent = FundExpense.objects.filter(profile=profile).aggregate(Sum('amount'))['amount__sum'] or 0
         remaining_balance = total_received - total_spent
 
         return response.Response({
@@ -612,21 +694,33 @@ class FundViewSet(viewsets.ModelViewSet):
         })
 
 class FundAdditionViewSet(viewsets.ModelViewSet):
-    queryset = FundAddition.objects.all().order_by('-date', '-id')
+    queryset = FundAddition.objects.all()
     serializer_class = FundAdditionSerializer
 
+    def get_queryset(self):
+        return FundAddition.objects.filter(profile=self.request.user.profile).order_by('-date', '-id')
+
+    def perform_create(self, serializer):
+        serializer.save(profile=self.request.user.profile)
+
 class FundExpenseViewSet(viewsets.ModelViewSet):
-    queryset = FundExpense.objects.all().order_by('-date', '-id')
+    queryset = FundExpense.objects.all()
     serializer_class = FundExpenseSerializer
 
+    def get_queryset(self):
+        return FundExpense.objects.filter(profile=self.request.user.profile).order_by('-date', '-id')
 
-from django.db.models import Q
+    def perform_create(self, serializer):
+        serializer.save(profile=self.request.user.profile)
+
 
 class GlobalSearchView(views.APIView):
     def get(self, request):
         q = request.query_params.get('q', '').strip()
         if not q:
             return response.Response([])
+
+        profile = request.user.profile
 
         # 1. Search Transactions
         txn_query = Q(description__icontains=q) | \
@@ -641,7 +735,7 @@ class GlobalSearchView(views.APIView):
                     Q(related_fund__settlement_notes__icontains=q) | \
                     Q(related_event__name__icontains=q)
         
-        transactions = Transaction.objects.filter(txn_query).distinct().order_by('-date', '-id')[:100]
+        transactions = Transaction.objects.filter(profile=profile).filter(txn_query).distinct().order_by('-date', '-id')[:100]
 
         results = []
         seen_txn_ids = set()
@@ -680,7 +774,7 @@ class GlobalSearchView(views.APIView):
 
         # 2. Search Debts (standalone or unmatched)
         debt_query = Q(person_name__icontains=q) | Q(description__icontains=q) | Q(ledger__name__icontains=q)
-        debts = Debt.objects.filter(debt_query).distinct()[:50]
+        debts = Debt.objects.filter(profile=profile).filter(debt_query).distinct()[:50]
         
         for debt in debts:
             if debt.transaction and debt.transaction.id in seen_txn_ids:
@@ -701,7 +795,7 @@ class GlobalSearchView(views.APIView):
 
         # 3. Search Funds (standalone or unmatched)
         fund_query = Q(title__icontains=q) | Q(purpose__icontains=q) | Q(provider__icontains=q) | Q(notes__icontains=q) | Q(settlement_notes__icontains=q)
-        funds = Fund.objects.filter(fund_query).distinct()[:50]
+        funds = Fund.objects.filter(profile=profile).filter(fund_query).distinct()[:50]
         
         for fund in funds:
             if fund.transaction and fund.transaction.id in seen_txn_ids:

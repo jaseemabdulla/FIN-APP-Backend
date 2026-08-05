@@ -5,11 +5,10 @@ from django.db.models import Sum
 from datetime import timedelta, date
 from collections import defaultdict
 
-def recalculate_balances():
+def recalculate_balances(profile):
     # Fetch all transactions ordered by date and id
-    transactions = Transaction.objects.all().order_by('date', 'id')
-    
-    BalanceSnapshot.objects.all().delete()
+    transactions = Transaction.objects.filter(profile=profile).order_by('date', 'id')
+    BalanceSnapshot.objects.filter(profile=profile).delete()
     
     cash = 0
     account = 0
@@ -61,6 +60,7 @@ def recalculate_balances():
         
         # Save Snapshot
         BalanceSnapshot.objects.create(
+            profile=profile,
             date=current_date,
             cash_in_hand=cash,
             cash_in_account=account
@@ -70,11 +70,11 @@ def recalculate_balances():
 
 @receiver(post_save, sender=Transaction)
 def update_balances_on_save(sender, instance, **kwargs):
-    recalculate_balances()
+    recalculate_balances(profile=instance.profile)
 
 @receiver(post_delete, sender=Transaction)
 def update_balances_on_delete(sender, instance, **kwargs):
-    recalculate_balances()
+    recalculate_balances(profile=instance.profile)
 
 @receiver(post_save, sender=Transaction)
 def create_debt_from_transaction(sender, instance, created, **kwargs):
@@ -95,6 +95,7 @@ def create_debt_from_transaction(sender, instance, created, **kwargs):
         
         # Create Debt and link it immediately to this transaction
         Debt.objects.create(
+            profile=instance.profile,
             date=instance.date,
             amount=instance.amount,
             debt_type=debt_type,

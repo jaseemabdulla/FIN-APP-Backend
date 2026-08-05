@@ -4,14 +4,18 @@ from rest_framework import status
 from django.db.models import Sum
 from finance.models import Debt, Transaction, Category, Ledger
 from datetime import date, timedelta
+from django.contrib.auth import get_user_model
 
 class DebtSettlePersonTestCase(TestCase):
     def setUp(self):
+        self.user = get_user_model().objects.create_user(username='testuser', password='password123', email='test@example.com')
         self.client = APIClient()
-        self.category = Category.objects.create(name="Loan / Debt")
+        self.client.force_authenticate(user=self.user)
+        self.category = Category.objects.create(name="Loan / Debt", profile=self.user.profile)
         
         # Debt 1: $100, TAKEN, oldest (2 days ago)
         self.t1 = Transaction.objects.create(
+            profile=self.user.profile,
             date=date.today() - timedelta(days=2),
             amount=100.00,
             payment_mode='CASH',
@@ -22,6 +26,7 @@ class DebtSettlePersonTestCase(TestCase):
         
         # Debt 2: $50, TAKEN, middle (1 day ago)
         self.t2 = Transaction.objects.create(
+            profile=self.user.profile,
             date=date.today() - timedelta(days=1),
             amount=50.00,
             payment_mode='CASH',
@@ -32,6 +37,7 @@ class DebtSettlePersonTestCase(TestCase):
         
         # Debt 3: $30, TAKEN, newest (today)
         self.t3 = Transaction.objects.create(
+            profile=self.user.profile,
             date=date.today(),
             amount=30.00,
             payment_mode='CASH',
@@ -111,8 +117,10 @@ class DebtSettlePersonTestCase(TestCase):
 
 class FundTestCase(TestCase):
     def setUp(self):
+        self.user = get_user_model().objects.create_user(username='testuser', password='password123', email='test@example.com')
         self.client = APIClient()
-        self.category = Category.objects.create(name="Tech Supplies")
+        self.client.force_authenticate(user=self.user)
+        self.category = Category.objects.create(name="Tech Supplies", profile=self.user.profile)
 
     def test_fund_creation_and_actions(self):
         # 1. Create a fund
@@ -236,12 +244,15 @@ class FundTestCase(TestCase):
 
 class GlobalSearchTestCase(TestCase):
     def setUp(self):
+        self.user = get_user_model().objects.create_user(username='testuser', password='password123', email='test@example.com')
         self.client = APIClient()
-        self.category_food = Category.objects.create(name="Food")
-        self.category_loan = Category.objects.create(name="Loan / Debt")
+        self.client.force_authenticate(user=self.user)
+        self.category_food = Category.objects.create(name="Food", profile=self.user.profile)
+        self.category_loan = Category.objects.create(name="Loan / Debt", profile=self.user.profile)
 
         # 1. Income transaction
         self.t1 = Transaction.objects.create(
+            profile=self.user.profile,
             date=date.today(),
             amount=5000.00,
             payment_mode='ACCOUNT',
@@ -251,6 +262,7 @@ class GlobalSearchTestCase(TestCase):
 
         # 2. Expense transaction
         self.t2 = Transaction.objects.create(
+            profile=self.user.profile,
             date=date.today(),
             amount=15.50,
             payment_mode='CASH',
@@ -261,6 +273,7 @@ class GlobalSearchTestCase(TestCase):
 
         # 3. Debt transaction
         self.t3 = Transaction.objects.create(
+            profile=self.user.profile,
             date=date.today(),
             amount=100.00,
             payment_mode='CASH',
@@ -300,8 +313,10 @@ class GlobalSearchTestCase(TestCase):
 
 class LedgerTestCase(TestCase):
     def setUp(self):
+        self.user = get_user_model().objects.create_user(username='testuser', password='password123', email='test@example.com')
         self.client = APIClient()
-        self.category = Category.objects.create(name="Loan / Debt")
+        self.client.force_authenticate(user=self.user)
+        self.category = Category.objects.create(name="Loan / Debt", profile=self.user.profile)
 
     def test_ledger_crud(self):
         # 1. Create Ledger
@@ -336,7 +351,7 @@ class LedgerTestCase(TestCase):
         self.assertEqual(Ledger.objects.count(), 0)
 
     def test_debt_linking_and_compatibility(self):
-        ledger = Ledger.objects.create(name="Bob Johnson", phone="555-0199")
+        ledger = Ledger.objects.create(name="Bob Johnson", phone="555-0199", profile=self.user.profile)
         
         # Create Debt linked to ledger
         debt_data = {
@@ -359,8 +374,9 @@ class LedgerTestCase(TestCase):
         self.assertEqual(debt.ledger, ledger)
 
     def test_ledger_deletion_protection(self):
-        ledger = Ledger.objects.create(name="Charlie Brown")
+        ledger = Ledger.objects.create(name="Charlie Brown", profile=self.user.profile)
         Debt.objects.create(
+            profile=self.user.profile,
             ledger=ledger,
             person_name=ledger.name,
             amount=50.00,
@@ -378,8 +394,9 @@ class LedgerTestCase(TestCase):
         self.assertTrue(Ledger.objects.filter(id=ledger.id).exists())
 
     def test_global_search_by_ledger_name(self):
-        ledger = Ledger.objects.create(name="Unique Ledger Person Name")
+        ledger = Ledger.objects.create(name="Unique Ledger Person Name", profile=self.user.profile)
         Debt.objects.create(
+            profile=self.user.profile,
             ledger=ledger,
             amount=10.00,
             debt_type="TAKEN",
@@ -393,8 +410,8 @@ class LedgerTestCase(TestCase):
         self.assertIn("Unique Ledger Person Name", response.data[0]['description'])
 
     def test_transaction_ledger_linking_and_sync(self):
-        ledger1 = Ledger.objects.create(name="Ledger One")
-        ledger2 = Ledger.objects.create(name="Ledger Two")
+        ledger1 = Ledger.objects.create(name="Ledger One", profile=self.user.profile)
+        ledger2 = Ledger.objects.create(name="Ledger Two", profile=self.user.profile)
         
         # 1. Create a transaction with type DEBT_TAKEN and a ledger
         tx_data = {
@@ -436,6 +453,63 @@ class LedgerTestCase(TestCase):
         self.assertEqual(float(debt.amount), 150.00)
         self.assertEqual(str(debt.date), "2026-08-02")
         self.assertEqual(debt.payment_mode, "ACCOUNT")
+
+
+class ReportsTestCase(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username='reportuser', password='password123', email='report@example.com')
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.category = Category.objects.create(name="Miscellaneous", profile=self.user.profile)
+
+    def test_daily_report_with_profile(self):
+        # Create a transaction for our profile
+        Transaction.objects.create(
+            profile=self.user.profile,
+            date=date.today(),
+            amount=50.00,
+            payment_mode='CASH',
+            transaction_type='INCOME',
+            category=self.category,
+            description="Profile income"
+        )
+        
+        # Create a transaction for other user's profile
+        other_user = get_user_model().objects.create_user(username='otheruser', password='password123', email='other@example.com')
+        Transaction.objects.create(
+            profile=other_user.profile,
+            date=date.today(),
+            amount=1000.00,
+            payment_mode='CASH',
+            transaction_type='INCOME',
+            category=self.category,
+            description="Other user income"
+        )
+
+        response = self.client.get(f'/api/reports/daily/?date={date.today()}')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        
+        # Verify only the profile's snapshot is returned as closing balance (which was recalculated dynamically)
+        self.assertEqual(float(response.data['closing_balance']['cash']), 50.00)
+        self.assertEqual(float(response.data['closing_balance']['account']), 0.00)
+        self.assertEqual(float(response.data['closing_balance']['total']), 50.00)
+        
+        # Verify that only the profile's transactions are returned
+        self.assertEqual(len(response.data['transactions']), 1)
+
+    def test_monthly_report_with_profile(self):
+        from finance.models import BalanceSnapshot
+        # Create snapshot
+        BalanceSnapshot.objects.create(
+            profile=self.user.profile,
+            date=date.today(),
+            cash_in_hand=150.00,
+            cash_in_account=250.00
+        )
+        
+        response = self.client.get(f'/api/reports/monthly/?year={date.today().year}&month={date.today().month}')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(float(response.data['remaining_balance']), 400.00)
 
 
 

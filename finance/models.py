@@ -3,20 +3,29 @@ from django.utils import timezone
 from datetime import date
 
 class Category(models.Model):
-    name = models.CharField(max_length=50, unique=True)
+    profile = models.ForeignKey('users.Profile', on_delete=models.CASCADE, null=False, blank=False)
+    name = models.CharField(max_length=50)
 
     def __str__(self):
         return self.name
 
+    class Meta:
+        unique_together = ('name', 'profile')
+
 class Event(models.Model):
-    name = models.CharField(max_length=100, unique=True)
+    profile = models.ForeignKey('users.Profile', on_delete=models.CASCADE, null=False, blank=False)
+    name = models.CharField(max_length=100)
     date = models.DateField(default=date.today)
     is_completed = models.BooleanField(default=False)
 
     def __str__(self):
         return self.name
 
+    class Meta:
+        unique_together = ('name', 'profile')
+
 class Transaction(models.Model):
+    profile = models.ForeignKey('users.Profile', on_delete=models.CASCADE, null=False, blank=False)
     PAYMENT_MODE_CHOICES = [
         ('CASH', 'Cash'),
         ('ACCOUNT', 'Account'),
@@ -51,7 +60,8 @@ class Transaction(models.Model):
         return f"{self.date} - {self.description} ({self.amount})"
 
 class BalanceSnapshot(models.Model):
-    date = models.DateField(unique=True, default=date.today)
+    profile = models.ForeignKey('users.Profile', on_delete=models.CASCADE, null=False, blank=False)
+    date = models.DateField(default=date.today)
     cash_in_hand = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     cash_in_account = models.DecimalField(max_digits=12, decimal_places=2, default=0)
 
@@ -62,8 +72,12 @@ class BalanceSnapshot(models.Model):
     def __str__(self):
         return f"Balance for {self.date}"
 
+    class Meta:
+        unique_together = ('date', 'profile')
+
 class Ledger(models.Model):
-    name = models.CharField(max_length=100, unique=True)
+    profile = models.ForeignKey('users.Profile', on_delete=models.CASCADE, null=False, blank=False)
+    name = models.CharField(max_length=100)
     phone = models.CharField(max_length=20, blank=True, default='')
     email = models.EmailField(blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -71,7 +85,11 @@ class Ledger(models.Model):
     def __str__(self):
         return self.name
 
+    class Meta:
+        unique_together = ('name', 'profile')
+
 class Debt(models.Model):
+    profile = models.ForeignKey('users.Profile', on_delete=models.CASCADE, null=False, blank=False)
     DEBT_TYPE_CHOICES = [
         ('TAKEN', 'Taken'),
         ('GIVEN', 'Given'),
@@ -96,11 +114,12 @@ class Debt(models.Model):
     def __str__(self):
         return f"{self.person_name} - {self.amount} ({self.debt_type})"
 
-def get_fund_category():
-    category, _ = Category.objects.get_or_create(name="Fund Management")
+def get_fund_category(profile):
+    category, _ = Category.objects.get_or_create(name="Fund Management", profile=profile)
     return category
 
 class Fund(models.Model):
+    profile = models.ForeignKey('users.Profile', on_delete=models.CASCADE, null=False, blank=False)
     STATUS_CHOICES = [
         ('ACTIVE', 'Active'),
         ('SETTLED', 'Settled'),
@@ -135,7 +154,7 @@ class Fund(models.Model):
         # 1. Save first to get an ID (for new records) or save other updates
         super().save(*args, **kwargs)
         
-        fund_cat = get_fund_category()
+        fund_cat = get_fund_category(self.profile)
         
         # Initial Fund transaction
         if self.transaction:
@@ -144,9 +163,11 @@ class Fund(models.Model):
             txn.amount = self.initial_amount
             txn.payment_mode = self.payment_mode
             txn.description = f"Fund Received: {self.title} (Provider: {self.provider})"
+            txn.profile = self.profile
             txn.save()
         else:
             txn = Transaction.objects.create(
+                profile=self.profile,
                 date=self.received_date,
                 amount=self.initial_amount,
                 payment_mode=self.payment_mode,
@@ -168,9 +189,11 @@ class Fund(models.Model):
                     ret_txn.amount = self.returned_amount
                     ret_txn.payment_mode = self.settlement_payment_mode
                     ret_txn.description = f"Fund Settled Return: {self.title}"
+                    ret_txn.profile = self.profile
                     ret_txn.save()
                 else:
                     ret_txn = Transaction.objects.create(
+                        profile=self.profile,
                         date=self.settlement_date or date.today(),
                         amount=self.returned_amount,
                         payment_mode=self.settlement_payment_mode,
@@ -196,9 +219,11 @@ class Fund(models.Model):
                     ext_txn.amount = self.additional_amount_required
                     ext_txn.payment_mode = self.settlement_payment_mode
                     ext_txn.description = f"Fund Settled Extra Expense: {self.title}"
+                    ext_txn.profile = self.profile
                     ext_txn.save()
                 else:
                     ext_txn = Transaction.objects.create(
+                        profile=self.profile,
                         date=self.settlement_date or date.today(),
                         amount=self.additional_amount_required,
                         payment_mode=self.settlement_payment_mode,
@@ -256,6 +281,7 @@ class Fund(models.Model):
                 pass
 
 class FundAddition(models.Model):
+    profile = models.ForeignKey('users.Profile', on_delete=models.CASCADE, null=False, blank=False)
     fund = models.ForeignKey(Fund, on_delete=models.CASCADE, related_name='additions')
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     date = models.DateField(default=date.today)
@@ -268,16 +294,20 @@ class FundAddition(models.Model):
         return f"Addition of {self.amount} to {self.fund.title} on {self.date}"
 
     def save(self, *args, **kwargs):
-        fund_cat = get_fund_category()
+        if not self.profile and self.fund:
+            self.profile = self.fund.profile
+        fund_cat = get_fund_category(self.profile)
         if self.transaction:
             txn = self.transaction
             txn.date = self.date
             txn.amount = self.amount
             txn.payment_mode = self.payment_mode
             txn.description = f"Fund Addition: {self.fund.title}"
+            txn.profile = self.profile
             txn.save()
         else:
             txn = Transaction.objects.create(
+                profile=self.profile,
                 date=self.date,
                 amount=self.amount,
                 payment_mode=self.payment_mode,
@@ -296,6 +326,7 @@ class FundAddition(models.Model):
             txn.delete()
 
 class FundExpense(models.Model):
+    profile = models.ForeignKey('users.Profile', on_delete=models.CASCADE, null=False, blank=False)
     fund = models.ForeignKey(Fund, on_delete=models.CASCADE, related_name='expenses')
     title = models.CharField(max_length=100)
     category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, blank=True)
@@ -311,7 +342,9 @@ class FundExpense(models.Model):
         return f"Expense of {self.amount} from {self.fund.title}: {self.title}"
 
     def save(self, *args, **kwargs):
-        fund_cat = get_fund_category()
+        if not self.profile and self.fund:
+            self.profile = self.fund.profile
+        fund_cat = get_fund_category(self.profile)
         if self.transaction:
             txn = self.transaction
             txn.date = self.date
@@ -319,9 +352,11 @@ class FundExpense(models.Model):
             txn.payment_mode = self.payment_mode
             txn.description = f"Fund Expense: {self.title} (Fund: {self.fund.title})"
             txn.category = fund_cat
+            txn.profile = self.profile
             txn.save()
         else:
             txn = Transaction.objects.create(
+                profile=self.profile,
                 date=self.date,
                 amount=self.amount,
                 payment_mode=self.payment_mode,
