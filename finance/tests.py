@@ -689,4 +689,209 @@ class ReportsTestCase(TestCase):
         self.assertEqual(float(response.data['remaining_balance']), 400.00)
 
 
+class HomeFormIntegrationTestCase(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username='homeuser', password='password123', email='home@example.com')
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.category = Category.objects.create(name="Loan / Debt", profile=self.user.profile)
+        self.fund_category = Category.objects.create(name="Fund Management", profile=self.user.profile)
+        self.ledger = Ledger.objects.create(name="Ledger A", profile=self.user.profile)
+
+    def test_home_form_flows(self):
+        # 1. Create Debt Taken from Home
+        response = self.client.post('/api/transactions/', {
+            "date": "2026-08-12",
+            "amount": "1000.00",
+            "payment_mode": "CASH",
+            "transaction_type": "DEBT_TAKEN",
+            "category": self.category.id,
+            "description": "Ledger A",
+            "ledger": self.ledger.id
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        debt_taken_txn_id = response.data['id']
+        
+        # Verify Debt record was created
+        debt_taken = Debt.objects.get(transaction_id=debt_taken_txn_id)
+        self.assertEqual(float(debt_taken.amount), 1000.00)
+        self.assertEqual(debt_taken.debt_type, 'TAKEN')
+        self.assertEqual(debt_taken.is_cleared, False)
+
+        # 2. Create Debt Given from Home
+        response = self.client.post('/api/transactions/', {
+            "date": "2026-08-12",
+            "amount": "500.00",
+            "payment_mode": "CASH",
+            "transaction_type": "DEBT_GIVEN",
+            "category": self.category.id,
+            "description": "Ledger A",
+            "ledger": self.ledger.id
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        debt_given_txn_id = response.data['id']
+        
+        # Verify Debt record was created
+        debt_given = Debt.objects.get(transaction_id=debt_given_txn_id)
+        self.assertEqual(float(debt_given.amount), 500.00)
+        self.assertEqual(debt_given.debt_type, 'GIVEN')
+        self.assertEqual(debt_given.is_cleared, False)
+
+        # 3. Return a Debt Taken partially (400.00 return on 1000.00 debt)
+        response = self.client.post('/api/transactions/', {
+            "date": "2026-08-12",
+            "amount": "400.00",
+            "payment_mode": "CASH",
+            "transaction_type": "DEBT_TAKEN_RETURN",
+            "category": self.category.id,
+            "description": "Repayment: Ledger A",
+            "related_debt": debt_taken.id,
+            "ledger": self.ledger.id
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        
+        # Verify remaining amount is 600.00 and debt is not cleared
+        debt_taken.refresh_from_db()
+        self.assertEqual(debt_taken.is_cleared, False)
+        # Using serializer to get remaining_amount just like frontend does
+        from finance.serializers import DebtSerializer
+        serializer = DebtSerializer(debt_taken)
+        self.assertEqual(float(serializer.data['remaining_amount']), 600.00)
+
+        # 4. Return the remaining Debt Taken (600.00)
+        response = self.client.post('/api/transactions/', {
+            "date": "2026-08-12",
+            "amount": "600.00",
+            "payment_mode": "CASH",
+            "transaction_type": "DEBT_TAKEN_RETURN",
+            "category": self.category.id,
+            "description": "Repayment: Ledger A",
+            "related_debt": debt_taken.id,
+            "ledger": self.ledger.id
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        
+        # Verify debt is now cleared
+        debt_taken.refresh_from_db()
+        self.assertEqual(debt_taken.is_cleared, True)
+        serializer = DebtSerializer(debt_taken)
+        self.assertEqual(float(serializer.data['remaining_amount']), 0.00)
+
+        # 5. Return a Debt Given partially (200.00 return on 500.00 debt)
+        response = self.client.post('/api/transactions/', {
+            "date": "2026-08-12",
+            "amount": "200.00",
+            "payment_mode": "CASH",
+            "transaction_type": "DEBT_GIVEN_RETURN",
+            "category": self.category.id,
+            "description": "Repayment: Ledger A",
+            "related_debt": debt_given.id,
+            "ledger": self.ledger.id
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        
+        # Verify remaining amount is 300.00 and debt is not cleared
+        debt_given.refresh_from_db()
+        self.assertEqual(debt_given.is_cleared, False)
+        serializer = DebtSerializer(debt_given)
+        self.assertEqual(float(serializer.data['remaining_amount']), 300.00)
+
+        # 6. Return the remaining Debt Given (300.00)
+        response = self.client.post('/api/transactions/', {
+            "date": "2026-08-12",
+            "amount": "300.00",
+            "payment_mode": "CASH",
+            "transaction_type": "DEBT_GIVEN_RETURN",
+            "category": self.category.id,
+            "description": "Repayment: Ledger A",
+            "related_debt": debt_given.id,
+            "ledger": self.ledger.id
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        
+        # Verify debt is now cleared
+        debt_given.refresh_from_db()
+        self.assertEqual(debt_given.is_cleared, True)
+        serializer = DebtSerializer(debt_given)
+        self.assertEqual(float(serializer.data['remaining_amount']), 0.00)
+
+        # 7. Create an active Fund first to credit/expense into
+        from finance.models import Fund
+        fund = Fund.objects.create(
+            profile=self.user.profile,
+            title="Home Fund",
+            ledger=self.ledger,
+            initial_amount=1000.00,
+            received_date=date.today(),
+            payment_mode="ACCOUNT"
+        )
+        self.assertEqual(fund.status, 'ACTIVE')
+        
+        # Verify Fund-related debt initially: difference = 1000 - 0 = 1000 (TAKEN debt created)
+        fund_debt = Debt.objects.get(related_fund=fund)
+        self.assertEqual(float(fund_debt.amount), 1000.00)
+        self.assertEqual(fund_debt.debt_type, 'TAKEN')
+
+        # 8. Add a Fund credit from Home (corresponds to createFundAddition)
+        response = self.client.post('/api/fund-additions/', {
+            "fund": fund.id,
+            "amount": "500.00",
+            "date": str(date.today()),
+            "notes": "Home credit addition",
+            "payment_mode": "ACCOUNT"
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        
+        # Verify fund balance: received = 1000 + 500 = 1500, spent = 0, balance = 1500
+        fund.refresh_from_db()
+        self.assertEqual(fund.status, 'ACTIVE')
+        from finance.serializers import FundSerializer
+        fund_serializer = FundSerializer(fund)
+        self.assertEqual(float(fund_serializer.data['remaining_balance']), 1500.00)
+
+        # 9. Add a Fund expense from Home (corresponds to createFundExpense)
+        response = self.client.post('/api/fund-expenses/', {
+            "fund": fund.id,
+            "title": "Home expense",
+            "amount": "300.00",
+            "date": str(date.today()),
+            "description": "Home expense details",
+            "payment_mode": "ACCOUNT"
+        }, format='multipart')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        
+        # Verify fund balance: received = 1500, spent = 300, balance = 1200
+        fund.refresh_from_db()
+        self.assertEqual(fund.status, 'ACTIVE')
+        fund_serializer = FundSerializer(fund)
+        self.assertEqual(float(fund_serializer.data['remaining_balance']), 1200.00)
+        
+        # 10. Verify Fund-related debt is recalculated correctly: difference = 1500 - 300 = 1200
+        fund_debt.refresh_from_db()
+        self.assertEqual(float(fund_debt.amount), 1200.00)
+        self.assertEqual(fund_debt.debt_type, 'TAKEN')
+        self.assertEqual(fund_debt.is_cleared, False)
+
+        # 11. Add large expense to close the fund
+        response = self.client.post('/api/fund-expenses/', {
+            "fund": fund.id,
+            "title": "Large expense",
+            "amount": "1200.00",
+            "date": str(date.today()),
+            "description": "Close fund",
+            "payment_mode": "ACCOUNT"
+        }, format='multipart')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        # Fund status should now be CLOSED since received == spent (1500 == 1500)
+        fund.refresh_from_db()
+        self.assertEqual(fund.status, 'CLOSED')
+        
+        # Recalculated difference: 1500 - 1500 = 0. Fund-debt amount should be 0 and is_cleared should be True
+        fund_debt.refresh_from_db()
+        self.assertEqual(float(fund_debt.amount), 0.00)
+        self.assertEqual(fund_debt.is_cleared, True)
+
+
+
 
