@@ -616,63 +616,11 @@ class FundViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(profile=self.request.user.profile)
 
-    @action(detail=True, methods=['post'], url_path='settle')
-    def settle(self, request, pk=None):
-        fund = self.get_object()
-        settlement_date_str = request.data.get('settlement_date', str(date.today()))
-        try:
-            if isinstance(settlement_date_str, str):
-                settlement_date = datetime.strptime(settlement_date_str, '%Y-%m-%d').date()
-            else:
-                settlement_date = settlement_date_str
-        except ValueError:
-            try:
-                settlement_date = datetime.fromisoformat(settlement_date_str.replace('Z', '+00:00')).date()
-            except ValueError:
-                return response.Response({"error": "Invalid date format"}, status=status.HTTP_400_BAD_REQUEST)
-
-        returned_amount = request.data.get('returned_amount', 0.00)
-        additional_amount_required = request.data.get('additional_amount_required', 0.00)
-        settlement_notes = request.data.get('settlement_notes', '')
-        settlement_payment_mode = request.data.get('settlement_payment_mode', 'ACCOUNT')
-
-        try:
-            returned_amount = float(returned_amount)
-        except ValueError:
-            return response.Response({"error": "returned_amount must be a number"}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            additional_amount_required = float(additional_amount_required)
-        except ValueError:
-            return response.Response({"error": "additional_amount_required must be a number"}, status=status.HTTP_400_BAD_REQUEST)
-
-        fund.status = 'SETTLED'
-        fund.settlement_date = settlement_date
-        fund.returned_amount = returned_amount
-        fund.additional_amount_required = additional_amount_required
-        fund.settlement_notes = settlement_notes
-        fund.settlement_payment_mode = settlement_payment_mode
-        fund.save()
-
-        return response.Response(self.get_serializer(fund).data)
-
-    @action(detail=True, methods=['post'], url_path='reopen')
-    def reopen(self, request, pk=None):
-        fund = self.get_object()
-        fund.status = 'ACTIVE'
-        fund.settlement_date = None
-        fund.returned_amount = 0.00
-        fund.additional_amount_required = 0.00
-        fund.settlement_notes = ''
-        fund.save()
-
-        return response.Response(self.get_serializer(fund).data)
-
     @action(detail=False, methods=['get'], url_path='reports')
     def reports(self, request):
         profile = request.user.profile
         active_funds = Fund.objects.filter(profile=profile, status='ACTIVE')
-        settled_funds = Fund.objects.filter(profile=profile, status='SETTLED')
+        closed_funds = Fund.objects.filter(profile=profile, status='CLOSED')
 
         fund_initial_sum = Fund.objects.filter(profile=profile).aggregate(Sum('initial_amount'))['initial_amount__sum'] or 0
         additions_sum = FundAddition.objects.filter(profile=profile).aggregate(Sum('amount'))['amount__sum'] or 0
@@ -687,10 +635,10 @@ class FundViewSet(viewsets.ModelViewSet):
                 'total_spent': float(total_spent),
                 'remaining_balance': float(remaining_balance),
                 'active_count': active_funds.count(),
-                'settled_count': settled_funds.count()
+                'settled_count': closed_funds.count()
             },
             'active_funds': FundSerializer(active_funds, many=True, context={'request': request}).data,
-            'settled_funds': FundSerializer(settled_funds, many=True, context={'request': request}).data
+            'settled_funds': FundSerializer(closed_funds, many=True, context={'request': request}).data
         })
 
 class FundAdditionViewSet(viewsets.ModelViewSet):
@@ -729,10 +677,8 @@ class GlobalSearchView(views.APIView):
                     Q(related_debt__ledger__name__icontains=q) | \
                     Q(related_debt__description__icontains=q) | \
                     Q(related_fund__title__icontains=q) | \
-                    Q(related_fund__purpose__icontains=q) | \
-                    Q(related_fund__provider__icontains=q) | \
+                    Q(related_fund__ledger__name__icontains=q) | \
                     Q(related_fund__notes__icontains=q) | \
-                    Q(related_fund__settlement_notes__icontains=q) | \
                     Q(related_event__name__icontains=q)
         
         transactions = Transaction.objects.filter(profile=profile).filter(txn_query).distinct().order_by('-date', '-id')[:100]
@@ -793,21 +739,21 @@ class GlobalSearchView(views.APIView):
                 'target_date': debt.date.strftime('%Y-%m-%d')
             })
 
-        # 3. Search Funds (standalone or unmatched)
-        fund_query = Q(title__icontains=q) | Q(purpose__icontains=q) | Q(provider__icontains=q) | Q(notes__icontains=q) | Q(settlement_notes__icontains=q)
+        fund_query = Q(title__icontains=q) | Q(ledger__name__icontains=q) | Q(notes__icontains=q)
         funds = Fund.objects.filter(profile=profile).filter(fund_query).distinct()[:50]
         
         for fund in funds:
             if fund.transaction and fund.transaction.id in seen_txn_ids:
                 continue
             
+            provider_name = fund.ledger.name if fund.ledger else "Unknown"
             results.append({
                 'id': fund.id,
                 'model': 'fund',
                 'date': fund.received_date.strftime('%Y-%m-%d'),
                 'amount': float(fund.initial_amount),
                 'type': 'FUND_MANAGEMENT_INC',
-                'description': f"Fund: {fund.title} (Provider: {fund.provider})",
+                'description': f"Fund: {fund.title} (Provider: {provider_name})",
                 'category': 'Fund Management',
                 'target': 'fund',
                 'target_id': fund.id,

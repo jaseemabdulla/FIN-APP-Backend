@@ -119,8 +119,6 @@ class FundAdditionSerializer(serializers.ModelSerializer):
         read_only_fields = ['profile']
 
 class FundExpenseSerializer(serializers.ModelSerializer):
-    category_name = serializers.CharField(source='category.name', read_only=True)
-
     class Meta:
         model = FundExpense
         fields = '__all__'
@@ -129,6 +127,7 @@ class FundExpenseSerializer(serializers.ModelSerializer):
 class FundSerializer(serializers.ModelSerializer):
     additions = FundAdditionSerializer(many=True, read_only=True)
     expenses = FundExpenseSerializer(many=True, read_only=True)
+    ledger_details = LedgerSerializer(source='ledger', read_only=True)
     
     total_received = serializers.SerializerMethodField()
     total_spent = serializers.SerializerMethodField()
@@ -140,6 +139,12 @@ class FundSerializer(serializers.ModelSerializer):
         model = Fund
         fields = '__all__'
         read_only_fields = ['profile']
+
+    def validate(self, attrs):
+        if not self.instance:
+            if not attrs.get('ledger'):
+                raise serializers.ValidationError({"ledger": "This field is required."})
+        return attrs
 
     def get_total_received(self, obj):
         initial = obj.initial_amount or 0
@@ -166,13 +171,14 @@ class FundSerializer(serializers.ModelSerializer):
             return d.strftime('%Y-%m-%d')
         
         # Initial Fund
+        provider_name = obj.ledger.name if obj.ledger else "Unknown"
         timeline.append({
             'id': f"initial_{obj.id}",
             'type': 'INITIAL_FUND',
             'date': format_date(obj.received_date),
             'title': 'Fund Created',
             'amount': float(obj.initial_amount),
-            'notes': f"Fund created with initial amount of {obj.initial_amount} from {obj.provider}. Purpose: {obj.purpose}. Notes: {obj.notes}"
+            'notes': f"Fund created with initial amount of {obj.initial_amount} from {provider_name}. Notes: {obj.notes}"
         })
         
         # Additions
@@ -183,7 +189,8 @@ class FundSerializer(serializers.ModelSerializer):
                 'date': format_date(add.date),
                 'title': 'Additional Funds Added',
                 'amount': float(add.amount),
-                'notes': add.notes
+                'notes': add.notes,
+                'payment_mode': add.payment_mode
             })
             
         # Expenses
@@ -200,22 +207,10 @@ class FundSerializer(serializers.ModelSerializer):
                 'type': 'EXPENSE',
                 'date': format_date(exp.date),
                 'title': exp.title,
-                'category': exp.category.name if exp.category else 'Uncategorized',
                 'amount': float(exp.amount),
                 'notes': exp.description,
-                'attachment_url': attachment_url
-            })
-            
-        # Settlement
-        if obj.status == 'SETTLED':
-            timeline.append({
-                'id': f"settlement_{obj.id}",
-                'type': 'SETTLEMENT',
-                'date': format_date(obj.settlement_date),
-                'title': 'Fund Settled & Closed',
-                'returned_amount': float(obj.returned_amount) if obj.returned_amount else 0.0,
-                'additional_amount_required': float(obj.additional_amount_required) if obj.additional_amount_required else 0.0,
-                'notes': obj.settlement_notes
+                'attachment_url': attachment_url,
+                'payment_mode': exp.payment_mode
             })
             
         # Sort by date, type, id to keep a consistent timeline

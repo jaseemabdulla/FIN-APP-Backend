@@ -115,19 +115,20 @@ class DebtSettlePersonTestCase(TestCase):
             debt = Debt.objects.get(transaction=t)
             self.assertEqual(debt.is_cleared, True)
 
+
 class FundTestCase(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(username='testuser', password='password123', email='test@example.com')
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
         self.category = Category.objects.create(name="Tech Supplies", profile=self.user.profile)
+        self.ledger = Ledger.objects.create(name="Alice", profile=self.user.profile)
 
-    def test_fund_creation_and_actions(self):
+    def test_fund_creation_and_automatic_status(self):
         # 1. Create a fund
         create_data = {
             "title": "Tech Fest 2026",
-            "purpose": "Organizing annual event",
-            "provider": "Alice",
+            "ledger": self.ledger.id,
             "initial_amount": "5000.00",
             "received_date": "2026-07-10",
             "notes": "Sponsor money",
@@ -145,8 +146,6 @@ class FundTestCase(TestCase):
         t_init = Transaction.objects.first()
         self.assertEqual(t_init.transaction_type, 'FUND_MANAGEMENT_INC')
         self.assertEqual(float(t_init.amount), 5000.00)
-        self.assertEqual(t_init.payment_mode, 'ACCOUNT')
-        self.assertEqual(t_init.related_fund_id, fund_id)
 
         # 2. Add additional fund
         addition_data = {
@@ -158,88 +157,266 @@ class FundTestCase(TestCase):
         }
         res_add = self.client.post('/api/fund-additions/', addition_data, format='json')
         self.assertEqual(res_add.status_code, status.HTTP_201_CREATED)
+        addition_id = res_add.data['id']
 
-        # Verify additional Transaction was created
-        self.assertEqual(Transaction.objects.count(), 2)
-        t_add = Transaction.objects.order_by('-id').first()
-        self.assertEqual(t_add.transaction_type, 'FUND_MANAGEMENT_INC')
-        self.assertEqual(float(t_add.amount), 1500.00)
-        self.assertEqual(t_add.related_fund_id, fund_id)
+        # Verify status is still ACTIVE
+        res_detail = self.client.get(f'/api/funds/{fund_id}/')
+        self.assertEqual(res_detail.data['status'], 'ACTIVE')
 
-        # 3. Add expense
+        # 3. Add expense of exactly 6500.00 (Total received = 6500, expenses = 6500)
         expense_data = {
             "fund": fund_id,
             "title": "Purchase routers",
-            "category": self.category.id,
-            "amount": "2000.00",
+            "amount": "6500.00",
             "date": "2026-07-12",
             "description": "Router buy",
             "payment_mode": "ACCOUNT"
         }
         res_exp = self.client.post('/api/fund-expenses/', expense_data, format='json')
         self.assertEqual(res_exp.status_code, status.HTTP_201_CREATED)
+        expense_id = res_exp.data['id']
 
-        # Verify expense Transaction was created
-        self.assertEqual(Transaction.objects.count(), 3)
-        t_exp = Transaction.objects.order_by('-id').first()
-        self.assertEqual(t_exp.transaction_type, 'FUND_MANAGEMENT_DEC')
-        self.assertEqual(float(t_exp.amount), 2000.00)
-        self.assertEqual(t_exp.related_fund_id, fund_id)
-
-        # 4. Check reports and totals
-        res_reports = self.client.get('/api/funds/reports/')
-        self.assertEqual(res_reports.status_code, status.HTTP_200_OK)
-        summary = res_reports.data['summary']
-        self.assertEqual(summary['total_received'], 6500.00)
-        self.assertEqual(summary['total_spent'], 2000.00)
-        self.assertEqual(summary['remaining_balance'], 4500.00)
-        self.assertEqual(summary['active_count'], 1)
-
-        # 5. Check timeline sorted correctly
+        # Status must automatically become CLOSED
         res_detail = self.client.get(f'/api/funds/{fund_id}/')
-        self.assertEqual(res_detail.status_code, status.HTTP_200_OK)
-        timeline = res_detail.data['timeline']
-        self.assertEqual(len(timeline), 3) # initial fund, addition, expense
-        self.assertEqual(timeline[0]['type'], 'INITIAL_FUND')
-        self.assertEqual(timeline[1]['type'], 'ADDITIONAL_FUND')
-        self.assertEqual(timeline[2]['type'], 'EXPENSE')
+        self.assertEqual(res_detail.data['status'], 'CLOSED')
 
-        # 6. Settle fund
-        settle_data = {
-            "settlement_date": "2026-07-15",
-            "returned_amount": "4500.00",
-            "additional_amount_required": "0.00",
-            "settlement_notes": "All settled, remainder returned",
-            "settlement_payment_mode": "ACCOUNT"
+        # 4. Add another expense of 1000.00 (Total received = 6500, expenses = 7500)
+        expense2_data = {
+            "fund": fund_id,
+            "title": "Cables",
+            "amount": "1000.00",
+            "date": "2026-07-13",
+            "description": "Cables buy",
+            "payment_mode": "ACCOUNT"
         }
-        res_settle = self.client.post(f'/api/funds/{fund_id}/settle/', settle_data, format='json')
-        self.assertEqual(res_settle.status_code, status.HTTP_200_OK)
-        self.assertEqual(res_settle.data['status'], 'SETTLED')
-        self.assertEqual(float(res_settle.data['returned_amount']), 4500.00)
+        res_exp2 = self.client.post('/api/fund-expenses/', expense2_data, format='json')
+        self.assertEqual(res_exp2.status_code, status.HTTP_201_CREATED)
+        expense2_id = res_exp2.data['id']
 
-        # Verify settlement Transaction was created
-        self.assertEqual(Transaction.objects.count(), 4)
-        t_settle = Transaction.objects.order_by('-id').first()
-        self.assertEqual(t_settle.transaction_type, 'FUND_MANAGEMENT_DEC')
-        self.assertEqual(float(t_settle.amount), 4500.00)
-        self.assertEqual(t_settle.related_fund_id, fund_id)
+        # Status must automatically become ACTIVE
+        res_detail = self.client.get(f'/api/funds/{fund_id}/')
+        self.assertEqual(res_detail.data['status'], 'ACTIVE')
 
-        # 7. Check reports again
-        res_reports = self.client.get('/api/funds/reports/')
-        summary = res_reports.data['summary']
-        self.assertEqual(summary['active_count'], 0)
-        self.assertEqual(summary['settled_count'], 1)
+        # 5. Add additional fund of 1000.00 (Total received = 7500, expenses = 7500)
+        addition2_data = {
+            "fund": fund_id,
+            "amount": "1000.00",
+            "date": "2026-07-14",
+            "notes": "Third installment",
+            "payment_mode": "ACCOUNT"
+        }
+        res_add2 = self.client.post('/api/fund-additions/', addition2_data, format='json')
+        self.assertEqual(res_add2.status_code, status.HTTP_201_CREATED)
 
-        # 8. Reopen fund and check that settlement transactions are deleted
-        res_reopen = self.client.post(f'/api/funds/{fund_id}/reopen/')
-        self.assertEqual(res_reopen.status_code, status.HTTP_200_OK)
-        self.assertEqual(res_reopen.data['status'], 'ACTIVE')
-        self.assertEqual(Transaction.objects.count(), 3) # initial + addition + expense (settlement deleted!)
+        # Status must automatically become CLOSED
+        res_detail = self.client.get(f'/api/funds/{fund_id}/')
+        self.assertEqual(res_detail.data['status'], 'CLOSED')
 
-        # 9. Delete the fund and verify all linked transactions are deleted
-        res_delete = self.client.delete(f'/api/funds/{fund_id}/')
-        self.assertEqual(res_delete.status_code, status.HTTP_204_NO_CONTENT)
-        self.assertEqual(Transaction.objects.count(), 0) # all transactions deleted!
+        # 6. Edit addition amount from 1500 to 2000 (Total received = 8000, expenses = 7500)
+        res_update_add = self.client.put(f'/api/fund-additions/{addition_id}/', {
+            "fund": fund_id,
+            "amount": "2000.00",
+            "date": "2026-07-11",
+            "notes": "Second installment edited",
+            "payment_mode": "ACCOUNT"
+        }, format='json')
+        self.assertEqual(res_update_add.status_code, status.HTTP_200_OK)
+
+        # Status must automatically become ACTIVE
+        res_detail = self.client.get(f'/api/funds/{fund_id}/')
+        self.assertEqual(res_detail.data['status'], 'ACTIVE')
+
+        # 7. Edit expense amount from 6500 to 7000 (Total received = 8000, expenses = 8000)
+        res_update_exp = self.client.put(f'/api/fund-expenses/{expense_id}/', {
+            "fund": fund_id,
+            "title": "Purchase routers edited",
+            "amount": "7000.00",
+            "date": "2026-07-12",
+            "description": "Router buy edited",
+            "payment_mode": "ACCOUNT"
+        }, format='json')
+        self.assertEqual(res_update_exp.status_code, status.HTTP_200_OK)
+
+        # Status must automatically become CLOSED
+        res_detail = self.client.get(f'/api/funds/{fund_id}/')
+        self.assertEqual(res_detail.data['status'], 'CLOSED')
+
+        # 8. Edit the initial fund entry: set amount to 0 (Total received = 3000, expenses = 8000)
+        res_update_fund = self.client.put(f'/api/funds/{fund_id}/', {
+            "title": "Tech Fest 2026",
+            "ledger": self.ledger.id,
+            "initial_amount": "0.00",
+            "received_date": "2026-07-10",
+            "notes": "Sponsor money edited to 0",
+            "payment_mode": "ACCOUNT"
+        }, format='json')
+        self.assertEqual(res_update_fund.status_code, status.HTTP_200_OK)
+
+        # Status must automatically become ACTIVE and initial transaction must be deleted
+        res_detail = self.client.get(f'/api/funds/{fund_id}/')
+        self.assertEqual(res_detail.data['status'], 'ACTIVE')
+        self.assertEqual(float(res_detail.data['initial_amount']), 0.00)
+
+        # 9. Delete addition
+        res_del_add = self.client.delete(f'/api/fund-additions/{addition_id}/')
+        self.assertEqual(res_del_add.status_code, status.HTTP_204_NO_CONTENT)
+
+        # 10. Delete expense
+        res_del_exp = self.client.delete(f'/api/fund-expenses/{expense_id}/')
+        self.assertEqual(res_del_exp.status_code, status.HTTP_204_NO_CONTENT)
+
+        # 11. Delete Fund
+        res_delete_fund = self.client.delete(f'/api/funds/{fund_id}/')
+        self.assertEqual(res_delete_fund.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(Transaction.objects.count(), 0)
+
+    def test_fund_to_debt_integration(self):
+        # Scenario 1 - Balanced initially (amount = 0)
+        # Create a fund with 0 initial amount
+        create_data_zero = {
+            "title": "Zero Fund",
+            "ledger": self.ledger.id,
+            "initial_amount": "0.00",
+            "received_date": "2026-07-10",
+            "notes": "Testing Zero Fund",
+            "payment_mode": "ACCOUNT"
+        }
+        res_zero = self.client.post('/api/funds/', create_data_zero, format='json')
+        self.assertEqual(res_zero.status_code, status.HTTP_201_CREATED)
+        fund_zero_id = res_zero.data['id']
+        
+        # Expected: No outstanding Fund-related debt (debt counts = 0)
+        self.assertEqual(Debt.objects.filter(related_fund_id=fund_zero_id).count(), 0)
+
+        # Scenario 2 - Excess Fund
+        # Create a fund with 10,000 initial amount
+        create_data = {
+            "title": "Project X",
+            "ledger": self.ledger.id,
+            "initial_amount": "10000.00",
+            "received_date": "2026-07-10",
+            "notes": "Tech Sponsor",
+            "payment_mode": "ACCOUNT"
+        }
+        response = self.client.post('/api/funds/', create_data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        fund_id = response.data['id']
+        
+        # Add expense of 7000 (Total credit = 10000, Total expense = 7000)
+        exp1_data = {
+            "fund": fund_id,
+            "title": "Expense A",
+            "amount": "7000.00",
+            "date": "2026-07-11",
+            "description": "Laptops",
+            "payment_mode": "ACCOUNT"
+        }
+        res_exp1 = self.client.post('/api/fund-expenses/', exp1_data, format='json')
+        self.assertEqual(res_exp1.status_code, status.HTTP_201_CREATED)
+        exp1_id = res_exp1.data['id']
+        
+        # Expected: ₹3,000 Taken/Payable debt against Alice
+        debts = Debt.objects.filter(related_fund_id=fund_id)
+        self.assertEqual(debts.count(), 1)
+        debt = debts.first()
+        self.assertEqual(float(debt.amount), 3000.00)
+        self.assertEqual(debt.debt_type, 'TAKEN')
+        self.assertEqual(debt.ledger, self.ledger)
+        self.assertEqual(debt.is_cleared, False)
+
+        # Scenario 4 - Update: change expense 7,000 -> 8,000
+        # Expected: Fund debt ₹3,000 -> ₹2,000, no duplicates
+        res_update_exp = self.client.put(f'/api/fund-expenses/{exp1_id}/', {
+            "fund": fund_id,
+            "title": "Expense A edited",
+            "amount": "8000.00",
+            "date": "2026-07-11",
+            "description": "Laptops upgrade",
+            "payment_mode": "ACCOUNT"
+        }, format='json')
+        self.assertEqual(res_update_exp.status_code, status.HTTP_200_OK)
+        
+        debts = Debt.objects.filter(related_fund_id=fund_id)
+        self.assertEqual(debts.count(), 1)
+        debt = debts.first()
+        self.assertEqual(float(debt.amount), 2000.00)
+        self.assertEqual(debt.debt_type, 'TAKEN')
+
+        # Scenario 3 - Excess Expense
+        # Add another expense: 4000 (Total credit = 10,000, Total expense = 12,000)
+        exp2_data = {
+            "fund": fund_id,
+            "title": "Expense B",
+            "amount": "4000.00",
+            "date": "2026-07-12",
+            "description": "Networking",
+            "payment_mode": "ACCOUNT"
+        }
+        res_exp2 = self.client.post('/api/fund-expenses/', exp2_data, format='json')
+        self.assertEqual(res_exp2.status_code, status.HTTP_201_CREATED)
+        exp2_id = res_exp2.data['id']
+        
+        # Expected: ₹2,000 Given/Lent debt against Alice
+        debts = Debt.objects.filter(related_fund_id=fund_id)
+        self.assertEqual(debts.count(), 1)
+        debt = debts.first()
+        self.assertEqual(float(debt.amount), 2000.00)
+        self.assertEqual(debt.debt_type, 'GIVEN')
+
+        # Scenario 5 - Delete: Delete expense B (Total credit = 10,000, Total expense = 8,000)
+        res_del_exp2 = self.client.delete(f'/api/fund-expenses/{exp2_id}/')
+        self.assertEqual(res_del_exp2.status_code, status.HTTP_204_NO_CONTENT)
+        
+        # Expected: Fund debt returns to ₹2,000 Taken/Payable
+        debts = Debt.objects.filter(related_fund_id=fund_id)
+        self.assertEqual(debts.count(), 1)
+        debt = debts.first()
+        self.assertEqual(float(debt.amount), 2000.00)
+        self.assertEqual(debt.debt_type, 'TAKEN')
+
+        # Scenario 6 - Close Again: Make credit == expense
+        # Add expense of 2000 (Total credit = 10,000, Total expense = 10,000)
+        exp3_data = {
+            "fund": fund_id,
+            "title": "Expense C",
+            "amount": "2000.00",
+            "date": "2026-07-13",
+            "description": "Catering",
+            "payment_mode": "ACCOUNT"
+        }
+        res_exp3 = self.client.post('/api/fund-expenses/', exp3_data, format='json')
+        self.assertEqual(res_exp3.status_code, status.HTTP_201_CREATED)
+        
+        # Expected: Debt has 0 amount, is_cleared = True, and Fund is CLOSED
+        debts = Debt.objects.filter(related_fund_id=fund_id)
+        self.assertEqual(debts.count(), 1)
+        debt = debts.first()
+        self.assertEqual(float(debt.amount), 0.00)
+        self.assertEqual(debt.is_cleared, True)
+        
+        res_fund = self.client.get(f'/api/funds/{fund_id}/')
+        self.assertEqual(res_fund.data['status'], 'CLOSED')
+
+        # Scenario 11/12/13 - Deletion Cleanup
+        # Create an unrelated transaction and debt to verify they remain untouched
+        unrelated_debt = Debt.objects.create(
+            profile=self.user.profile,
+            person_name="Bob",
+            amount=500.00,
+            debt_type="GIVEN",
+            is_cleared=False
+        )
+        
+        # Now delete the fund
+        res_delete_fund = self.client.delete(f'/api/funds/{fund_id}/')
+        self.assertEqual(res_delete_fund.status_code, status.HTTP_204_NO_CONTENT)
+        
+        # Verify that all Fund-related debts and transactions are deleted
+        self.assertEqual(Debt.objects.filter(related_fund_id=fund_id).count(), 0)
+        self.assertEqual(Transaction.objects.filter(related_fund_id=fund_id).count(), 0)
+        
+        # Verify that unrelated debt remains untouched
+        self.assertTrue(Debt.objects.filter(id=unrelated_debt.id).exists())
 
 
 class GlobalSearchTestCase(TestCase):
