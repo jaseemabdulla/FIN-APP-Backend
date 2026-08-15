@@ -61,6 +61,11 @@ class TransactionViewSet(viewsets.ModelViewSet):
         date_param = self.request.query_params.get('date')
         if date_param:
             queryset = queryset.filter(date=date_param)
+            
+        ledger_param = self.request.query_params.get('ledger')
+        if ledger_param:
+            queryset = queryset.filter(ledger_id=ledger_param)
+            
         return queryset
 
     def perform_create(self, serializer):
@@ -255,6 +260,201 @@ class DailyReportView(views.APIView):
             "total_expense": total_expense,
             "total_investment": total_investment,
             "transactions": txn_serializer.data
+        })
+
+class WeeklyReportView(views.APIView):
+    def get(self, request):
+        date_str = request.query_params.get('date', str(date.today()))
+        try:
+            target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        except ValueError:
+            try:
+                target_date = datetime.fromisoformat(date_str.replace('Z', '+00:00')).date()
+            except ValueError:
+                return response.Response({"error": "Invalid date format"}, status=status.HTTP_400_BAD_REQUEST)
+
+        start_week = target_date - timedelta(days=target_date.weekday())
+        end_week = start_week + timedelta(days=6)
+
+        txns = Transaction.objects.filter(
+            profile=request.user.profile,
+            date__range=[start_week, end_week]
+        )
+
+        total_income = txns.filter(transaction_type='INCOME', related_debt__isnull=True).aggregate(Sum('amount'))['amount__sum'] or 0
+        total_expense = txns.filter(transaction_type='EXPENSE', related_debt__isnull=True).aggregate(Sum('amount'))['amount__sum'] or 0
+        total_investment = txns.filter(transaction_type='INVESTMENT').aggregate(Sum('amount'))['amount__sum'] or 0
+        net_savings = total_income - total_expense
+
+        total_credit = txns.filter(
+            transaction_type__in=['INCOME', 'DEBT_TAKEN', 'DEBT_GIVEN_RETURN', 'FUND_MANAGEMENT_INC']
+        ).aggregate(Sum('amount'))['amount__sum'] or 0
+
+        total_debit = txns.filter(
+            transaction_type__in=['EXPENSE', 'INVESTMENT', 'DEBT_GIVEN', 'DEBT_TAKEN_RETURN', 'FUND_MANAGEMENT_DEC']
+        ).aggregate(Sum('amount'))['amount__sum'] or 0
+
+        closing_snapshot = BalanceSnapshot.objects.filter(
+            profile=request.user.profile,
+            date__lte=end_week
+        ).order_by('-date').first()
+
+        if closing_snapshot:
+            remaining_amount = closing_snapshot.total_balance
+            remaining_cash = closing_snapshot.cash_in_hand
+            remaining_account = closing_snapshot.cash_in_account
+        else:
+            remaining_amount = 0
+            remaining_cash = 0
+            remaining_account = 0
+
+        stats = txns.values('transaction_type', 'category__name').annotate(total=Sum('amount')).order_by('transaction_type', '-total')
+        
+        category_stats_formatted = []
+        for item in stats:
+            txn_type = item['transaction_type']
+            cat_name = item['category__name']
+            
+            cat_txns = txns.filter(transaction_type=txn_type, category__name=cat_name).order_by('-date')
+            category_stats_formatted.append({
+                "category": cat_name if cat_name else 'Uncategorized',
+                "type": txn_type,
+                "total": item['total'],
+                "transactions": TransactionSerializer(cat_txns, many=True).data
+            })
+
+        debt_taken_total = txns.filter(transaction_type='DEBT_TAKEN').aggregate(Sum('amount'))['amount__sum'] or 0
+        debt_given_total = txns.filter(transaction_type='DEBT_GIVEN').aggregate(Sum('amount'))['amount__sum'] or 0
+        debt_taken_return_total = txns.filter(transaction_type='DEBT_TAKEN_RETURN').aggregate(Sum('amount'))['amount__sum'] or 0
+        debt_given_return_total = txns.filter(transaction_type='DEBT_GIVEN_RETURN').aggregate(Sum('amount'))['amount__sum'] or 0
+        
+        debt_txns = txns.filter(transaction_type__in=['DEBT_TAKEN', 'DEBT_GIVEN', 'DEBT_TAKEN_RETURN', 'DEBT_GIVEN_RETURN']).order_by('-date')
+        debt_serializer = TransactionSerializer(debt_txns, many=True)
+        
+        return response.Response({
+            "week_start": str(start_week),
+            "week_end": str(end_week),
+            "total_income": total_income,
+            "total_expense": total_expense,
+            "total_investment": total_investment,
+            "net_savings": net_savings,
+            "total_credit": total_credit,
+            "total_debit": total_debit,
+            "remaining_balance": remaining_amount,
+            "remaining_amount": remaining_amount,
+            "remaining_cash": remaining_cash,
+            "remaining_account": remaining_account,
+            "category_stats": category_stats_formatted,
+            "category_breakdown": category_stats_formatted,
+            "debts": {
+                "total_taken": debt_taken_total,
+                "total_given": debt_given_total,
+                "total_taken_returned": debt_taken_return_total,
+                "total_given_returned": debt_given_return_total,
+                "transactions": debt_serializer.data
+            },
+            "debt_breakdown": {
+                "debt_taken": debt_taken_total,
+                "debt_given": debt_given_total,
+                "debt_taken_return": debt_taken_return_total,
+                "debt_given_return": debt_given_return_total,
+                "transactions": debt_serializer.data
+            }
+        })
+
+class YearlyReportView(views.APIView):
+    def get(self, request):
+        year = request.query_params.get('year', datetime.now().year)
+        
+        try:
+            year = int(year)
+        except:
+            return response.Response({"error": "Invalid year"}, status=status.HTTP_400_BAD_REQUEST)
+
+        txns = Transaction.objects.filter(
+            profile=request.user.profile,
+            date__year=year
+        )
+
+        total_income = txns.filter(transaction_type='INCOME', related_debt__isnull=True).aggregate(Sum('amount'))['amount__sum'] or 0
+        total_expense = txns.filter(transaction_type='EXPENSE', related_debt__isnull=True).aggregate(Sum('amount'))['amount__sum'] or 0
+        total_investment = txns.filter(transaction_type='INVESTMENT').aggregate(Sum('amount'))['amount__sum'] or 0
+        net_savings = total_income - total_expense
+
+        total_credit = txns.filter(
+            transaction_type__in=['INCOME', 'DEBT_TAKEN', 'DEBT_GIVEN_RETURN', 'FUND_MANAGEMENT_INC']
+        ).aggregate(Sum('amount'))['amount__sum'] or 0
+
+        total_debit = txns.filter(
+            transaction_type__in=['EXPENSE', 'INVESTMENT', 'DEBT_GIVEN', 'DEBT_TAKEN_RETURN', 'FUND_MANAGEMENT_DEC']
+        ).aggregate(Sum('amount'))['amount__sum'] or 0
+
+        target_date = date(year, 12, 31)
+        closing_snapshot = BalanceSnapshot.objects.filter(
+            profile=request.user.profile,
+            date__lte=target_date
+        ).order_by('-date').first()
+
+        if closing_snapshot:
+            remaining_amount = closing_snapshot.total_balance
+            remaining_cash = closing_snapshot.cash_in_hand
+            remaining_account = closing_snapshot.cash_in_account
+        else:
+            remaining_amount = 0
+            remaining_cash = 0
+            remaining_account = 0
+
+        stats = txns.values('transaction_type', 'category__name').annotate(total=Sum('amount')).order_by('transaction_type', '-total')
+        
+        category_stats_formatted = []
+        for item in stats:
+            txn_type = item['transaction_type']
+            cat_name = item['category__name']
+            
+            cat_txns = txns.filter(transaction_type=txn_type, category__name=cat_name).order_by('-date')
+            category_stats_formatted.append({
+                "category": cat_name if cat_name else 'Uncategorized',
+                "type": txn_type,
+                "total": item['total'],
+                "transactions": TransactionSerializer(cat_txns, many=True).data
+            })
+
+        debt_taken_total = txns.filter(transaction_type='DEBT_TAKEN').aggregate(Sum('amount'))['amount__sum'] or 0
+        debt_given_total = txns.filter(transaction_type='DEBT_GIVEN').aggregate(Sum('amount'))['amount__sum'] or 0
+        debt_taken_return_total = txns.filter(transaction_type='DEBT_TAKEN_RETURN').aggregate(Sum('amount'))['amount__sum'] or 0
+        debt_given_return_total = txns.filter(transaction_type='DEBT_GIVEN_RETURN').aggregate(Sum('amount'))['amount__sum'] or 0
+        
+        debt_txns = txns.filter(transaction_type__in=['DEBT_TAKEN', 'DEBT_GIVEN', 'DEBT_TAKEN_RETURN', 'DEBT_GIVEN_RETURN']).order_by('-date')
+        debt_serializer = TransactionSerializer(debt_txns, many=True)
+        
+        return response.Response({
+            "year": year,
+            "total_income": total_income,
+            "total_expense": total_expense,
+            "total_investment": total_investment,
+            "net_savings": net_savings,
+            "total_credit": total_credit,
+            "total_debit": total_debit,
+            "remaining_balance": remaining_amount,
+            "remaining_amount": remaining_amount,
+            "remaining_cash": remaining_cash,
+            "remaining_account": remaining_account,
+            "category_stats": category_stats_formatted,
+            "category_breakdown": category_stats_formatted,
+            "debts": {
+                "total_taken": debt_taken_total,
+                "total_given": debt_given_total,
+                "total_taken_returned": debt_taken_return_total,
+                "total_given_returned": debt_given_return_total,
+                "transactions": debt_serializer.data
+            },
+            "debt_breakdown": {
+                "debt_taken": debt_taken_total,
+                "debt_given": debt_given_total,
+                "debt_taken_return": debt_taken_return_total,
+                "debt_given_return": debt_given_return_total,
+                "transactions": debt_serializer.data
+            }
         })
 
 class MonthlyReportView(views.APIView):

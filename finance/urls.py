@@ -1,7 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
-    TransactionViewSet, DebtViewSet, DailyReportView, MonthlyReportView, CategoryViewSet, EventViewSet,
+    TransactionViewSet, DebtViewSet, DailyReportView, MonthlyReportView, WeeklyReportView, YearlyReportView, CategoryViewSet, EventViewSet,
     FundViewSet, FundAdditionViewSet, FundExpenseViewSet, ExportMonthlyCSVView, ExportPDFReportView, AppInitView,
     GlobalSearchView, LedgerViewSet
 )
@@ -20,7 +20,9 @@ urlpatterns = [
     path('', include(router.urls)),
     path('search/', GlobalSearchView.as_view(), name='global-search'),
     path('reports/daily/', DailyReportView.as_view(), name='daily-report'),
+    path('reports/weekly/', WeeklyReportView.as_view(), name='weekly-report'),
     path('reports/monthly/', MonthlyReportView.as_view(), name='monthly-report'),
+    path('reports/yearly/', YearlyReportView.as_view(), name='yearly-report'),
     path('reports/export/', ExportMonthlyCSVView.as_view(), name='export-report'),
     path('reports/export-pdf/', ExportPDFReportView.as_view(), name='export-pdf-report'),
     path('init/', AppInitView.as_view(), name='app-init'),

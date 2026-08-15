@@ -33,10 +33,33 @@ class TransactionSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
+        
+        representation['debt_is_cleared'] = None
+        representation['debt_total_repaid'] = None
+        representation['debt_remaining_amount'] = None
+        representation['fund_status'] = None
+        
+        if hasattr(instance, 'debt_entry') and instance.debt_entry:
+            debt = instance.debt_entry
+            total_repaid = debt.repayments.aggregate(Sum('amount'))['amount__sum'] or 0
+            representation['debt_is_cleared'] = debt.is_cleared
+            representation['debt_total_repaid'] = float(total_repaid)
+            representation['debt_remaining_amount'] = float(debt.amount - total_repaid)
+        elif instance.related_debt:
+            debt = instance.related_debt
+            total_repaid = debt.repayments.aggregate(Sum('amount'))['amount__sum'] or 0
+            representation['debt_is_cleared'] = debt.is_cleared
+            representation['debt_total_repaid'] = float(total_repaid)
+            representation['debt_remaining_amount'] = float(debt.amount - total_repaid)
+            
+        if instance.related_fund:
+            representation['fund_status'] = instance.related_fund.status
+            
         if hasattr(instance, 'debt_entry'):
             representation['debt_description'] = instance.debt_entry.description
         else:
             representation['debt_description'] = ''
+            
         return representation
 
 class EventSerializer(serializers.ModelSerializer):
