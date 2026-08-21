@@ -893,5 +893,117 @@ class HomeFormIntegrationTestCase(TestCase):
         self.assertEqual(fund_debt.is_cleared, True)
 
 
+class InvestmentTestCase(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username='testuser', password='password123', email='test@example.com')
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.category = Category.objects.create(name="Investment", profile=self.user.profile)
+
+    def test_investment_flow_and_validations(self):
+        # 1. Create Investment Profile
+        create_data = {
+            "name": "Gold Investment Test",
+            "investment_type": "GOLD",
+            "description": "Buying gold bars",
+            "date": "2026-08-20"
+        }
+        response = self.client.post('/api/investments/', create_data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        invest_id = response.data['id']
+        self.assertEqual(response.data['status'], 'CLOSED') # Starts at 0 balance, so CLOSED/SETTLED
+        self.assertEqual(float(response.data['remaining_balance']), 0.00)
+
+        # 2. Add Capital (INVESTMENT transaction)
+        txn1_data = {
+            "amount": "5000.00",
+            "payment_mode": "ACCOUNT",
+            "transaction_type": "INVESTMENT",
+            "category": self.category.id,
+            "description": "Initial gold purchase",
+            "date": "2026-08-20",
+            "related_investment": invest_id
+        }
+        res_txn1 = self.client.post('/api/transactions/', txn1_data, format='json')
+        self.assertEqual(res_txn1.status_code, status.HTTP_201_CREATED)
+
+        # Verify investment balance updates and status is ACTIVE
+        res_detail = self.client.get(f'/api/investments/{invest_id}/')
+        self.assertEqual(float(res_detail.data['total_invested']), 5000.00)
+        self.assertEqual(float(res_detail.data['remaining_balance']), 5000.00)
+        self.assertEqual(res_detail.data['status'], 'ACTIVE')
+
+        # 3. Add more capital
+        txn2_data = {
+            "amount": "3000.00",
+            "payment_mode": "ACCOUNT",
+            "transaction_type": "INVESTMENT",
+            "category": self.category.id,
+            "description": "Additional gold purchase",
+            "date": "2026-08-21",
+            "related_investment": invest_id
+        }
+        res_txn2 = self.client.post('/api/transactions/', txn2_data, format='json')
+        self.assertEqual(res_txn2.status_code, status.HTTP_201_CREATED)
+
+        # Verify balance is 8000
+        res_detail = self.client.get(f'/api/investments/{invest_id}/')
+        self.assertEqual(float(res_detail.data['total_invested']), 8000.00)
+        self.assertEqual(float(res_detail.data['remaining_balance']), 8000.00)
+
+        # 4. Withdraw Capital (INVESTMENT_RETURN transaction)
+        txn3_data = {
+            "amount": "2000.00",
+            "payment_mode": "ACCOUNT",
+            "transaction_type": "INVESTMENT_RETURN",
+            "category": self.category.id,
+            "description": "Selling some gold",
+            "date": "2026-08-22",
+            "related_investment": invest_id
+        }
+        res_txn3 = self.client.post('/api/transactions/', txn3_data, format='json')
+        self.assertEqual(res_txn3.status_code, status.HTTP_201_CREATED)
+
+        # Verify balance is 6000
+        res_detail = self.client.get(f'/api/investments/{invest_id}/')
+        self.assertEqual(float(res_detail.data['total_withdrawn']), 2000.00)
+        self.assertEqual(float(res_detail.data['remaining_balance']), 6000.00)
+        self.assertEqual(res_detail.data['status'], 'ACTIVE')
+
+        # 5. Over-withdrawal Validation (try to withdraw 7000, remaining is 6000)
+        txn4_data = {
+            "amount": "7000.00",
+            "payment_mode": "ACCOUNT",
+            "transaction_type": "INVESTMENT_RETURN",
+            "category": self.category.id,
+            "description": "Over-withdrawing",
+            "date": "2026-08-23",
+            "related_investment": invest_id
+        }
+        res_txn4 = self.client.post('/api/transactions/', txn4_data, format='json')
+        self.assertEqual(res_txn4.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("amount", res_txn4.data)
+
+        # 6. Full Withdrawal (withdraw remaining 6000)
+        txn5_data = {
+            "amount": "6000.00",
+            "payment_mode": "ACCOUNT",
+            "transaction_type": "INVESTMENT_RETURN",
+            "category": self.category.id,
+            "description": "Liquidating gold portfolio",
+            "date": "2026-08-24",
+            "related_investment": invest_id
+        }
+        res_txn5 = self.client.post('/api/transactions/', txn5_data, format='json')
+        self.assertEqual(res_txn5.status_code, status.HTTP_201_CREATED)
+
+        # Verify balance is 0 and status is CLOSED
+        res_detail = self.client.get(f'/api/investments/{invest_id}/')
+        self.assertEqual(float(res_detail.data['total_withdrawn']), 8000.00)
+        self.assertEqual(float(res_detail.data['remaining_balance']), 0.00)
+        self.assertEqual(res_detail.data['status'], 'CLOSED')
+
+
+
 
 

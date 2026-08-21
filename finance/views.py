@@ -2,8 +2,8 @@ from django.shortcuts import render
 from rest_framework import viewsets, views, response, status
 from rest_framework.decorators import action
 from django.db.models import Sum
-from .models import Transaction, BalanceSnapshot, Debt, Category, Event, Fund, FundAddition, FundExpense, Ledger
-from .serializers import TransactionSerializer, BalanceSnapshotSerializer, DebtSerializer, CategorySerializer, EventSerializer, FundSerializer, FundAdditionSerializer, FundExpenseSerializer, LedgerSerializer
+from .models import Transaction, BalanceSnapshot, Debt, Category, Event, Fund, FundAddition, FundExpense, Ledger, Investment
+from .serializers import TransactionSerializer, BalanceSnapshotSerializer, DebtSerializer, CategorySerializer, EventSerializer, FundSerializer, FundAdditionSerializer, FundExpenseSerializer, LedgerSerializer, InvestmentSerializer
 from datetime import datetime, date, timedelta
 import csv
 from django.http import HttpResponse
@@ -251,6 +251,7 @@ class DailyReportView(views.APIView):
         total_expense = transactions.filter(transaction_type='EXPENSE', related_debt__isnull=True).aggregate(Sum('amount'))['amount__sum'] or 0
         total_income = transactions.filter(transaction_type='INCOME', related_debt__isnull=True).aggregate(Sum('amount'))['amount__sum'] or 0
         total_investment = transactions.filter(transaction_type='INVESTMENT').aggregate(Sum('amount'))['amount__sum'] or 0
+        total_investment_return = transactions.filter(transaction_type='INVESTMENT_RETURN').aggregate(Sum('amount'))['amount__sum'] or 0
 
         return response.Response({
             "date": date_str,
@@ -259,6 +260,7 @@ class DailyReportView(views.APIView):
             "total_income": total_income,
             "total_expense": total_expense,
             "total_investment": total_investment,
+            "total_investment_return": total_investment_return,
             "transactions": txn_serializer.data
         })
 
@@ -284,10 +286,11 @@ class WeeklyReportView(views.APIView):
         total_income = txns.filter(transaction_type='INCOME', related_debt__isnull=True).aggregate(Sum('amount'))['amount__sum'] or 0
         total_expense = txns.filter(transaction_type='EXPENSE', related_debt__isnull=True).aggregate(Sum('amount'))['amount__sum'] or 0
         total_investment = txns.filter(transaction_type='INVESTMENT').aggregate(Sum('amount'))['amount__sum'] or 0
+        total_investment_return = txns.filter(transaction_type='INVESTMENT_RETURN').aggregate(Sum('amount'))['amount__sum'] or 0
         net_savings = total_income - total_expense
 
         total_credit = txns.filter(
-            transaction_type__in=['INCOME', 'DEBT_TAKEN', 'DEBT_GIVEN_RETURN', 'FUND_MANAGEMENT_INC']
+            transaction_type__in=['INCOME', 'DEBT_TAKEN', 'DEBT_GIVEN_RETURN', 'FUND_MANAGEMENT_INC', 'INVESTMENT_RETURN']
         ).aggregate(Sum('amount'))['amount__sum'] or 0
 
         total_debit = txns.filter(
@@ -337,6 +340,7 @@ class WeeklyReportView(views.APIView):
             "total_income": total_income,
             "total_expense": total_expense,
             "total_investment": total_investment,
+            "total_investment_return": total_investment_return,
             "net_savings": net_savings,
             "total_credit": total_credit,
             "total_debit": total_debit,
@@ -379,10 +383,11 @@ class YearlyReportView(views.APIView):
         total_income = txns.filter(transaction_type='INCOME', related_debt__isnull=True).aggregate(Sum('amount'))['amount__sum'] or 0
         total_expense = txns.filter(transaction_type='EXPENSE', related_debt__isnull=True).aggregate(Sum('amount'))['amount__sum'] or 0
         total_investment = txns.filter(transaction_type='INVESTMENT').aggregate(Sum('amount'))['amount__sum'] or 0
+        total_investment_return = txns.filter(transaction_type='INVESTMENT_RETURN').aggregate(Sum('amount'))['amount__sum'] or 0
         net_savings = total_income - total_expense
 
         total_credit = txns.filter(
-            transaction_type__in=['INCOME', 'DEBT_TAKEN', 'DEBT_GIVEN_RETURN', 'FUND_MANAGEMENT_INC']
+            transaction_type__in=['INCOME', 'DEBT_TAKEN', 'DEBT_GIVEN_RETURN', 'FUND_MANAGEMENT_INC', 'INVESTMENT_RETURN']
         ).aggregate(Sum('amount'))['amount__sum'] or 0
 
         total_debit = txns.filter(
@@ -432,6 +437,7 @@ class YearlyReportView(views.APIView):
             "total_income": total_income,
             "total_expense": total_expense,
             "total_investment": total_investment,
+            "total_investment_return": total_investment_return,
             "net_savings": net_savings,
             "total_credit": total_credit,
             "total_debit": total_debit,
@@ -477,6 +483,7 @@ class MonthlyReportView(views.APIView):
         total_income = txns.filter(transaction_type='INCOME', related_debt__isnull=True).aggregate(Sum('amount'))['amount__sum'] or 0
         total_expense = txns.filter(transaction_type='EXPENSE', related_debt__isnull=True).aggregate(Sum('amount'))['amount__sum'] or 0
         total_investment = txns.filter(transaction_type='INVESTMENT').aggregate(Sum('amount'))['amount__sum'] or 0
+        total_investment_return = txns.filter(transaction_type='INVESTMENT_RETURN').aggregate(Sum('amount'))['amount__sum'] or 0
         
         # Net savings: Income - Expense (Investment is usually part of savings allocation, but if we consider it cash out...)
         # Let's define Net Savings as purely Income - Expense for now, or Income - (Expense + Investment)?
@@ -486,7 +493,7 @@ class MonthlyReportView(views.APIView):
 
         # Total credit (all inflows: INCOME, DEBT_TAKEN, DEBT_GIVEN_RETURN, FUND_MANAGEMENT_INC)
         total_credit = txns.filter(
-            transaction_type__in=['INCOME', 'DEBT_TAKEN', 'DEBT_GIVEN_RETURN', 'FUND_MANAGEMENT_INC']
+            transaction_type__in=['INCOME', 'DEBT_TAKEN', 'DEBT_GIVEN_RETURN', 'FUND_MANAGEMENT_INC', 'INVESTMENT_RETURN']
         ).aggregate(Sum('amount'))['amount__sum'] or 0
 
         # Total debit (all outflows: EXPENSE, INVESTMENT, DEBT_GIVEN, DEBT_TAKEN_RETURN, FUND_MANAGEMENT_DEC)
@@ -545,6 +552,7 @@ class MonthlyReportView(views.APIView):
             "total_income": total_income,
             "total_expense": total_expense,
             "total_investment": total_investment,
+            "total_investment_return": total_investment_return,
             "net_savings": net_savings,
             "total_credit": total_credit,
             "total_debit": total_debit,
@@ -862,6 +870,17 @@ class FundExpenseViewSet(viewsets.ModelViewSet):
         serializer.save(profile=self.request.user.profile)
 
 
+class InvestmentViewSet(viewsets.ModelViewSet):
+    queryset = Investment.objects.all()
+    serializer_class = InvestmentSerializer
+
+    def get_queryset(self):
+        return Investment.objects.filter(profile=self.request.user.profile).order_by('-date', '-id')
+
+    def perform_create(self, serializer):
+        serializer.save(profile=self.request.user.profile)
+
+
 class GlobalSearchView(views.APIView):
     def get(self, request):
         q = request.query_params.get('q', '').strip()
@@ -879,7 +898,9 @@ class GlobalSearchView(views.APIView):
                     Q(related_fund__title__icontains=q) | \
                     Q(related_fund__ledger__name__icontains=q) | \
                     Q(related_fund__notes__icontains=q) | \
-                    Q(related_event__name__icontains=q)
+                    Q(related_event__name__icontains=q) | \
+                    Q(related_investment__name__icontains=q) | \
+                    Q(related_investment__description__icontains=q)
         
         transactions = Transaction.objects.filter(profile=profile).filter(txn_query).distinct().order_by('-date', '-id')[:100]
 
@@ -904,6 +925,9 @@ class GlobalSearchView(views.APIView):
             elif txn.related_fund_id:
                 target = 'fund'
                 target_id = txn.related_fund_id
+            elif txn.related_investment_id:
+                target = 'investment'
+                target_id = txn.related_investment_id
                 
             results.append({
                 'id': txn.id,
@@ -958,6 +982,24 @@ class GlobalSearchView(views.APIView):
                 'target': 'fund',
                 'target_id': fund.id,
                 'target_date': fund.received_date.strftime('%Y-%m-%d')
+            })
+
+        # 4. Search Investments
+        invest_query = Q(name__icontains=q) | Q(description__icontains=q) | Q(custom_type__icontains=q)
+        investments = Investment.objects.filter(profile=profile).filter(invest_query).distinct()[:50]
+        
+        for invest in investments:
+            results.append({
+                'id': invest.id,
+                'model': 'investment',
+                'date': invest.date.strftime('%Y-%m-%d'),
+                'amount': float(invest.transactions.filter(transaction_type='INVESTMENT').aggregate(Sum('amount'))['amount__sum'] or 0),
+                'type': 'INVESTMENT',
+                'description': f"Investment: {invest.name} - {invest.description}" if invest.description else f"Investment: {invest.name}",
+                'category': 'Investment',
+                'target': 'investment',
+                'target_id': invest.id,
+                'target_date': invest.date.strftime('%Y-%m-%d')
             })
 
         # Sort combined results by date descending, then id descending

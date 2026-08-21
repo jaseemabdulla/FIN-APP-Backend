@@ -24,6 +24,26 @@ class Event(models.Model):
     class Meta:
         unique_together = ('name', 'profile')
 
+class Investment(models.Model):
+    INVESTMENT_TYPE_CHOICES = [
+        ('GOLD', 'Gold'),
+        ('STOCK', 'Stock'),
+        ('MUTUAL_FUND', 'Mutual Fund'),
+        ('BUSINESS', 'Business'),
+        ('OTHER', 'Other / Custom'),
+    ]
+
+    profile = models.ForeignKey('users.Profile', on_delete=models.CASCADE, null=False, blank=False)
+    name = models.CharField(max_length=100)
+    investment_type = models.CharField(max_length=20, choices=INVESTMENT_TYPE_CHOICES, default='OTHER')
+    custom_type = models.CharField(max_length=50, blank=True, default='')
+    description = models.TextField(blank=True, default='')
+    date = models.DateField(default=date.today)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.name} ({self.investment_type})"
+
 class Transaction(models.Model):
     profile = models.ForeignKey('users.Profile', on_delete=models.CASCADE, null=False, blank=False)
     PAYMENT_MODE_CHOICES = [
@@ -41,6 +61,7 @@ class Transaction(models.Model):
         ('CASH_WITHDRAWAL', 'Cash Withdrawal'),
         ('CASH_DEPOSIT', 'Cash Deposit'),
         ('INVESTMENT', 'Investment'),
+        ('INVESTMENT_RETURN', 'Investment Return'),
         ('FUND_MANAGEMENT_INC', 'Fund Management (Incoming)'),
         ('FUND_MANAGEMENT_DEC', 'Fund Management (Outgoing)'),
     ]
@@ -55,6 +76,7 @@ class Transaction(models.Model):
     related_debt = models.ForeignKey('Debt', on_delete=models.SET_NULL, null=True, blank=True, related_name='repayments')
     related_event = models.ForeignKey('Event', on_delete=models.SET_NULL, null=True, blank=True, related_name='transactions')
     related_fund = models.ForeignKey('Fund', on_delete=models.SET_NULL, null=True, blank=True, related_name='account_transactions')
+    related_investment = models.ForeignKey('Investment', on_delete=models.SET_NULL, null=True, blank=True, related_name='transactions')
 
     def __str__(self):
         return f"{self.date} - {self.description} ({self.amount})"

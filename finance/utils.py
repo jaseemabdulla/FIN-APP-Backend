@@ -39,7 +39,7 @@ def generate_pdf_report(title, date_range_str, transactions, total_income, total
     net_savings = total_income - total_expense
     
     # Calculate Total Inflow (Credit) and Total Outflow (Debit)
-    total_credit = sum(txn.amount for txn in transactions if txn.transaction_type in ['INCOME', 'DEBT_TAKEN', 'DEBT_GIVEN_RETURN', 'FUND_MANAGEMENT_INC'])
+    total_credit = sum(txn.amount for txn in transactions if txn.transaction_type in ['INCOME', 'DEBT_TAKEN', 'DEBT_GIVEN_RETURN', 'FUND_MANAGEMENT_INC', 'INVESTMENT_RETURN'])
     total_debit = sum(txn.amount for txn in transactions if txn.transaction_type in ['EXPENSE', 'INVESTMENT', 'DEBT_GIVEN', 'DEBT_TAKEN_RETURN', 'FUND_MANAGEMENT_DEC'])
     
     # Calculate Remaining Amount Have (closing balance at the end of the period)
@@ -168,7 +168,7 @@ def generate_pdf_report(title, date_range_str, transactions, total_income, total
         ]
         
         for i, txn in enumerate(day_txns, start=1):
-             color = colors.green if txn.transaction_type in ['INCOME', 'DEBT_TAKEN', 'DEBT_GIVEN_RETURN', 'FUND_MANAGEMENT_INC'] else colors.red
+             color = colors.green if txn.transaction_type in ['INCOME', 'DEBT_TAKEN', 'DEBT_GIVEN_RETURN', 'FUND_MANAGEMENT_INC', 'INVESTMENT_RETURN'] else colors.red
              style_cmds.append(('TEXTCOLOR', (3, i), (3, i), color))
         
         t.setStyle(TableStyle(style_cmds))
@@ -511,7 +511,7 @@ def generate_event_pdf_report(event_name, event_date_str, transactions):
         
         # Apply row colors
         for i, txn in enumerate(transactions, start=1):
-             color = colors.green if txn.transaction_type in ['INCOME', 'DEBT_TAKEN', 'CASH_DEPOSIT', 'DEBT_GIVEN_RETURN', 'FUND_MANAGEMENT_INC'] else colors.red
+             color = colors.green if txn.transaction_type in ['INCOME', 'DEBT_TAKEN', 'CASH_DEPOSIT', 'DEBT_GIVEN_RETURN', 'FUND_MANAGEMENT_INC', 'INVESTMENT_RETURN'] else colors.red
              style_cmds.append(('TEXTCOLOR', (3, i), (3, i), color))
              
         t.setStyle(TableStyle(style_cmds))

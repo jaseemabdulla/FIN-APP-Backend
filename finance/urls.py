@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     TransactionViewSet, DebtViewSet, DailyReportView, MonthlyReportView, WeeklyReportView, YearlyReportView, CategoryViewSet, EventViewSet,
     FundViewSet, FundAdditionViewSet, FundExpenseViewSet, ExportMonthlyCSVView, ExportPDFReportView, AppInitView,
-    GlobalSearchView, LedgerViewSet
+    GlobalSearchView, LedgerViewSet, InvestmentViewSet
 )
 
 router = DefaultRouter()
@@ -15,6 +15,7 @@ router.register(r'funds', FundViewSet)
 router.register(r'fund-additions', FundAdditionViewSet)
 router.register(r'fund-expenses', FundExpenseViewSet)
 router.register(r'ledgers', LedgerViewSet)
+router.register(r'investments', InvestmentViewSet)
 
 urlpatterns = [
     path('', include(router.urls)),

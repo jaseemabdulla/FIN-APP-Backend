@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Transaction, BalanceSnapshot, Debt, Category, Event, Fund, FundAddition, FundExpense, Ledger
+from .models import Transaction, BalanceSnapshot, Debt, Category, Event, Fund, FundAddition, FundExpense, Ledger, Investment
 from django.db.models import Sum
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -12,6 +12,7 @@ class TransactionSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True)
     event_name = serializers.CharField(source='related_event.name', read_only=True)
     related_fund_title = serializers.CharField(source='related_fund.title', read_only=True)
+    related_investment_name = serializers.CharField(source='related_investment.name', read_only=True)
     debt_description = serializers.CharField(required=False, allow_blank=True, default='')
     ledger_name = serializers.SerializerMethodField()
     
@@ -19,6 +20,40 @@ class TransactionSerializer(serializers.ModelSerializer):
         model = Transaction
         fields = '__all__'
         read_only_fields = ['profile']
+
+    def validate(self, attrs):
+        # Validation for investment returns and additions
+        txn_type = attrs.get('transaction_type', self.instance.transaction_type if self.instance else None)
+        if txn_type == 'INVESTMENT_RETURN':
+            related_investment = attrs.get('related_investment', self.instance.related_investment if self.instance else None)
+            if not related_investment:
+                raise serializers.ValidationError({"related_investment": "This field is required for Investment Return transactions."})
+            
+            amount = attrs.get('amount', self.instance.amount if self.instance else 0)
+            
+            # Compute remaining balance on this investment
+            invested_txns = related_investment.transactions.filter(transaction_type='INVESTMENT')
+            if self.instance:
+                invested_txns = invested_txns.exclude(pk=self.instance.pk)
+            total_invested = invested_txns.aggregate(Sum('amount'))['amount__sum'] or 0
+            
+            returned_txns = related_investment.transactions.filter(transaction_type='INVESTMENT_RETURN')
+            if self.instance:
+                returned_txns = returned_txns.exclude(pk=self.instance.pk)
+            total_returned = returned_txns.aggregate(Sum('amount'))['amount__sum'] or 0
+            
+            remaining_balance = total_invested - total_returned
+            
+            if amount > remaining_balance:
+                raise serializers.ValidationError({
+                    "amount": f"Withdrawal amount cannot exceed the available investment balance of ₹{remaining_balance:,.2f}"
+                })
+        elif txn_type == 'INVESTMENT':
+            related_investment = attrs.get('related_investment', self.instance.related_investment if self.instance else None)
+            if not related_investment:
+                raise serializers.ValidationError({"related_investment": "This field is required for Investment transactions."})
+                
+        return attrs
 
     def get_ledger_name(self, obj):
         if obj.ledger:
@@ -239,4 +274,31 @@ class FundSerializer(serializers.ModelSerializer):
         # Sort by date, type, id to keep a consistent timeline
         timeline.sort(key=lambda x: (x['date'], x['id']))
         return timeline
+
+class InvestmentSerializer(serializers.ModelSerializer):
+    total_invested = serializers.SerializerMethodField()
+    total_withdrawn = serializers.SerializerMethodField()
+    remaining_balance = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
+    transactions = TransactionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Investment
+        fields = '__all__'
+        read_only_fields = ['profile']
+
+    def get_total_invested(self, obj):
+        return obj.transactions.filter(transaction_type='INVESTMENT').aggregate(Sum('amount'))['amount__sum'] or 0
+
+    def get_total_withdrawn(self, obj):
+        return obj.transactions.filter(transaction_type='INVESTMENT_RETURN').aggregate(Sum('amount'))['amount__sum'] or 0
+
+    def get_remaining_balance(self, obj):
+        return self.get_total_invested(obj) - self.get_total_withdrawn(obj)
+
+    def get_status(self, obj):
+        balance = self.get_remaining_balance(obj)
+        if balance > 0:
+            return 'ACTIVE'
+        return 'CLOSED'
 
