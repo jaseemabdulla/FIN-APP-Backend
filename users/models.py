@@ -5,6 +5,8 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 
 class User(AbstractUser):
+    is_email_verified = models.BooleanField(default=False)
+
     def __str__(self):
         return self.username
 

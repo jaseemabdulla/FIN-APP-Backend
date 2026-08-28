@@ -1,7 +1,20 @@
-from rest_framework import serializers
+from rest_framework import serializers, exceptions
 from django.contrib.auth import get_user_model
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 User = get_user_model()
+
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    def validate(self, attrs):
+        # authenticate() is called inside super().validate(attrs)
+        data = super().validate(attrs)
+        if not self.user.is_email_verified:
+            raise exceptions.AuthenticationFailed({
+                "email_unverified": True,
+                "email": self.user.email,
+                "detail": "Please verify your email before logging in."
+            })
+        return data
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
