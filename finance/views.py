@@ -287,6 +287,8 @@ class WeeklyReportView(views.APIView):
         total_expense = txns.filter(transaction_type='EXPENSE', related_debt__isnull=True).aggregate(Sum('amount'))['amount__sum'] or 0
         total_investment = txns.filter(transaction_type='INVESTMENT').aggregate(Sum('amount'))['amount__sum'] or 0
         total_investment_return = txns.filter(transaction_type='INVESTMENT_RETURN').aggregate(Sum('amount'))['amount__sum'] or 0
+        total_fund_inc = txns.filter(transaction_type='FUND_MANAGEMENT_INC').aggregate(Sum('amount'))['amount__sum'] or 0
+        total_fund_dec = txns.filter(transaction_type='FUND_MANAGEMENT_DEC').aggregate(Sum('amount'))['amount__sum'] or 0
         net_savings = total_income - total_expense
 
         total_credit = txns.filter(
@@ -341,6 +343,8 @@ class WeeklyReportView(views.APIView):
             "total_expense": total_expense,
             "total_investment": total_investment,
             "total_investment_return": total_investment_return,
+            "total_fund_inc": total_fund_inc,
+            "total_fund_dec": total_fund_dec,
             "net_savings": net_savings,
             "total_credit": total_credit,
             "total_debit": total_debit,
@@ -384,6 +388,8 @@ class YearlyReportView(views.APIView):
         total_expense = txns.filter(transaction_type='EXPENSE', related_debt__isnull=True).aggregate(Sum('amount'))['amount__sum'] or 0
         total_investment = txns.filter(transaction_type='INVESTMENT').aggregate(Sum('amount'))['amount__sum'] or 0
         total_investment_return = txns.filter(transaction_type='INVESTMENT_RETURN').aggregate(Sum('amount'))['amount__sum'] or 0
+        total_fund_inc = txns.filter(transaction_type='FUND_MANAGEMENT_INC').aggregate(Sum('amount'))['amount__sum'] or 0
+        total_fund_dec = txns.filter(transaction_type='FUND_MANAGEMENT_DEC').aggregate(Sum('amount'))['amount__sum'] or 0
         net_savings = total_income - total_expense
 
         total_credit = txns.filter(
@@ -438,6 +444,8 @@ class YearlyReportView(views.APIView):
             "total_expense": total_expense,
             "total_investment": total_investment,
             "total_investment_return": total_investment_return,
+            "total_fund_inc": total_fund_inc,
+            "total_fund_dec": total_fund_dec,
             "net_savings": net_savings,
             "total_credit": total_credit,
             "total_debit": total_debit,
@@ -484,6 +492,8 @@ class MonthlyReportView(views.APIView):
         total_expense = txns.filter(transaction_type='EXPENSE', related_debt__isnull=True).aggregate(Sum('amount'))['amount__sum'] or 0
         total_investment = txns.filter(transaction_type='INVESTMENT').aggregate(Sum('amount'))['amount__sum'] or 0
         total_investment_return = txns.filter(transaction_type='INVESTMENT_RETURN').aggregate(Sum('amount'))['amount__sum'] or 0
+        total_fund_inc = txns.filter(transaction_type='FUND_MANAGEMENT_INC').aggregate(Sum('amount'))['amount__sum'] or 0
+        total_fund_dec = txns.filter(transaction_type='FUND_MANAGEMENT_DEC').aggregate(Sum('amount'))['amount__sum'] or 0
         
         # Net savings: Income - Expense (Investment is usually part of savings allocation, but if we consider it cash out...)
         # Let's define Net Savings as purely Income - Expense for now, or Income - (Expense + Investment)?
@@ -553,6 +563,8 @@ class MonthlyReportView(views.APIView):
             "total_expense": total_expense,
             "total_investment": total_investment,
             "total_investment_return": total_investment_return,
+            "total_fund_inc": total_fund_inc,
+            "total_fund_dec": total_fund_dec,
             "net_savings": net_savings,
             "total_credit": total_credit,
             "total_debit": total_debit,
