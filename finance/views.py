@@ -193,6 +193,37 @@ class DebtViewSet(viewsets.ModelViewSet):
             "transactions_count": len(created_transactions)
         })
 
+def get_fund_management_summary(profile):
+    active_funds = Fund.objects.filter(profile=profile, status='ACTIVE')
+    closed_funds = Fund.objects.filter(profile=profile, status='CLOSED')
+
+    fund_initial_sum = Fund.objects.filter(profile=profile).aggregate(Sum('initial_amount'))['initial_amount__sum'] or 0
+    additions_sum = FundAddition.objects.filter(profile=profile).aggregate(Sum('amount'))['amount__sum'] or 0
+    total_received = fund_initial_sum + additions_sum
+
+    total_spent = FundExpense.objects.filter(profile=profile).aggregate(Sum('amount'))['amount__sum'] or 0
+    remaining_balance = total_received - total_spent
+
+    cash_initial = Fund.objects.filter(profile=profile, payment_mode='CASH').aggregate(Sum('initial_amount'))['initial_amount__sum'] or 0
+    cash_additions = FundAddition.objects.filter(profile=profile, payment_mode='CASH').aggregate(Sum('amount'))['amount__sum'] or 0
+    cash_expenses = FundExpense.objects.filter(profile=profile, payment_mode='CASH').aggregate(Sum('amount'))['amount__sum'] or 0
+    cash_balance = (cash_initial + cash_additions) - cash_expenses
+
+    account_initial = Fund.objects.filter(profile=profile, payment_mode='ACCOUNT').aggregate(Sum('initial_amount'))['initial_amount__sum'] or 0
+    account_additions = FundAddition.objects.filter(profile=profile, payment_mode='ACCOUNT').aggregate(Sum('amount'))['amount__sum'] or 0
+    account_expenses = FundExpense.objects.filter(profile=profile, payment_mode='ACCOUNT').aggregate(Sum('amount'))['amount__sum'] or 0
+    account_balance = (account_initial + account_additions) - account_expenses
+
+    return {
+        'total_received': float(total_received),
+        'total_spent': float(total_spent),
+        'remaining_balance': float(remaining_balance),
+        'cash_balance': float(cash_balance),
+        'account_balance': float(account_balance),
+        'active_count': active_funds.count(),
+        'settled_count': closed_funds.count()
+    }
+
 class DailyReportView(views.APIView):
     def get(self, request):
         date_str = request.query_params.get('date', str(date.today()))
@@ -253,6 +284,8 @@ class DailyReportView(views.APIView):
         total_investment = transactions.filter(transaction_type='INVESTMENT').aggregate(Sum('amount'))['amount__sum'] or 0
         total_investment_return = transactions.filter(transaction_type='INVESTMENT_RETURN').aggregate(Sum('amount'))['amount__sum'] or 0
 
+        fund_summary = get_fund_management_summary(request.user.profile)
+
         return response.Response({
             "date": date_str,
             "opening_balance": opening_data,
@@ -261,6 +294,7 @@ class DailyReportView(views.APIView):
             "total_expense": total_expense,
             "total_investment": total_investment,
             "total_investment_return": total_investment_return,
+            "fund_summary": fund_summary,
             "transactions": txn_serializer.data
         })
 
@@ -345,6 +379,7 @@ class WeeklyReportView(views.APIView):
             "total_investment_return": total_investment_return,
             "total_fund_inc": total_fund_inc,
             "total_fund_dec": total_fund_dec,
+            "fund_summary": get_fund_management_summary(request.user.profile),
             "net_savings": net_savings,
             "total_credit": total_credit,
             "total_debit": total_debit,
@@ -446,6 +481,7 @@ class YearlyReportView(views.APIView):
             "total_investment_return": total_investment_return,
             "total_fund_inc": total_fund_inc,
             "total_fund_dec": total_fund_dec,
+            "fund_summary": get_fund_management_summary(request.user.profile),
             "net_savings": net_savings,
             "total_credit": total_credit,
             "total_debit": total_debit,
@@ -565,6 +601,7 @@ class MonthlyReportView(views.APIView):
             "total_investment_return": total_investment_return,
             "total_fund_inc": total_fund_inc,
             "total_fund_dec": total_fund_dec,
+            "fund_summary": get_fund_management_summary(request.user.profile),
             "net_savings": net_savings,
             "total_credit": total_credit,
             "total_debit": total_debit,
@@ -842,21 +879,8 @@ class FundViewSet(viewsets.ModelViewSet):
         active_funds = Fund.objects.filter(profile=profile, status='ACTIVE')
         closed_funds = Fund.objects.filter(profile=profile, status='CLOSED')
 
-        fund_initial_sum = Fund.objects.filter(profile=profile).aggregate(Sum('initial_amount'))['initial_amount__sum'] or 0
-        additions_sum = FundAddition.objects.filter(profile=profile).aggregate(Sum('amount'))['amount__sum'] or 0
-        total_received = fund_initial_sum + additions_sum
-
-        total_spent = FundExpense.objects.filter(profile=profile).aggregate(Sum('amount'))['amount__sum'] or 0
-        remaining_balance = total_received - total_spent
-
         return response.Response({
-            'summary': {
-                'total_received': float(total_received),
-                'total_spent': float(total_spent),
-                'remaining_balance': float(remaining_balance),
-                'active_count': active_funds.count(),
-                'settled_count': closed_funds.count()
-            },
+            'summary': get_fund_management_summary(profile),
             'active_funds': FundSerializer(active_funds, many=True, context={'request': request}).data,
             'settled_funds': FundSerializer(closed_funds, many=True, context={'request': request}).data
         })

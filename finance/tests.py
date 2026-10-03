@@ -1004,6 +1004,128 @@ class InvestmentTestCase(TestCase):
         self.assertEqual(res_detail.data['status'], 'CLOSED')
 
 
+class PersonalBalanceAndFundSeparationTestCase(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username='testuser_sep', password='password123', email='sep@example.com')
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.category = Category.objects.create(name="Miscellaneous", profile=self.user.profile)
+        self.ledger = Ledger.objects.create(name="Sponsor Org", profile=self.user.profile)
+
+    def test_personal_balance_isolated_from_fund_management(self):
+        today_str = str(date.today())
+
+        # 1. Create personal income: ₹10,000 ACCOUNT, ₹2,000 CASH
+        Transaction.objects.create(
+            profile=self.user.profile,
+            date=date.today(),
+            amount=10000.00,
+            payment_mode='ACCOUNT',
+            transaction_type='INCOME',
+            category=self.category,
+            description='Salary'
+        )
+        Transaction.objects.create(
+            profile=self.user.profile,
+            date=date.today(),
+            amount=2000.00,
+            payment_mode='CASH',
+            transaction_type='INCOME',
+            category=self.category,
+            description='Cash Bonus'
+        )
+
+        res = self.client.get(f'/api/reports/daily/?date={today_str}')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(float(res.data['closing_balance']['account']), 10000.00)
+        self.assertEqual(float(res.data['closing_balance']['cash']), 2000.00)
+        self.assertEqual(float(res.data['closing_balance']['total']), 12000.00)
+        self.assertEqual(float(res.data['fund_summary']['remaining_balance']), 0.00)
+
+        # 2. Create a Fund (receipt of ₹50,000 in ACCOUNT mode)
+        fund_res = self.client.post('/api/funds/', {
+            "title": "Annual Event Fund",
+            "ledger": self.ledger.id,
+            "initial_amount": "50000.00",
+            "received_date": today_str,
+            "notes": "Sponsorship received",
+            "payment_mode": "ACCOUNT"
+        }, format='json')
+        self.assertEqual(fund_res.status_code, status.HTTP_201_CREATED)
+        fund_id = fund_res.data['id']
+
+        # Verify Personal balances did NOT change, but Fund Summary updated
+        res = self.client.get(f'/api/reports/daily/?date={today_str}')
+        self.assertEqual(float(res.data['closing_balance']['account']), 10000.00)
+        self.assertEqual(float(res.data['closing_balance']['cash']), 2000.00)
+        self.assertEqual(float(res.data['closing_balance']['total']), 12000.00)
+        self.assertEqual(float(res.data['fund_summary']['remaining_balance']), 50000.00)
+        self.assertEqual(float(res.data['fund_summary']['total_received']), 50000.00)
+
+        # 3. Add Fund Addition of ₹10,000 in CASH mode
+        add_res = self.client.post('/api/fund-additions/', {
+            "fund": fund_id,
+            "amount": "10000.00",
+            "date": today_str,
+            "notes": "Additional cash contribution",
+            "payment_mode": "CASH"
+        }, format='json')
+        self.assertEqual(add_res.status_code, status.HTTP_201_CREATED)
+        addition_id = add_res.data['id']
+
+        # Verify Personal balances still unchanged, Fund Cash & Total updated
+        res = self.client.get(f'/api/reports/daily/?date={today_str}')
+        self.assertEqual(float(res.data['closing_balance']['account']), 10000.00)
+        self.assertEqual(float(res.data['closing_balance']['cash']), 2000.00)
+        self.assertEqual(float(res.data['fund_summary']['remaining_balance']), 60000.00)
+        self.assertEqual(float(res.data['fund_summary']['cash_balance']), 10000.00)
+        self.assertEqual(float(res.data['fund_summary']['account_balance']), 50000.00)
+
+        # 4. Record Fund Expense of ₹15,000 in ACCOUNT mode
+        exp_res = self.client.post('/api/fund-expenses/', {
+            "fund": fund_id,
+            "title": "Venue Booking",
+            "amount": "15000.00",
+            "date": today_str,
+            "description": "Hall deposit",
+            "payment_mode": "ACCOUNT"
+        }, format='json')
+        self.assertEqual(exp_res.status_code, status.HTTP_201_CREATED)
+
+        res = self.client.get(f'/api/reports/daily/?date={today_str}')
+        self.assertEqual(float(res.data['closing_balance']['account']), 10000.00)
+        self.assertEqual(float(res.data['closing_balance']['cash']), 2000.00)
+        self.assertEqual(float(res.data['fund_summary']['total_spent']), 15000.00)
+        self.assertEqual(float(res.data['fund_summary']['remaining_balance']), 45000.00)
+
+        # 5. Delete Fund Addition
+        del_add_res = self.client.delete(f'/api/fund-additions/{addition_id}/')
+        self.assertEqual(del_add_res.status_code, status.HTTP_204_NO_CONTENT)
+
+        res = self.client.get(f'/api/reports/daily/?date={today_str}')
+        self.assertEqual(float(res.data['closing_balance']['account']), 10000.00)
+        self.assertEqual(float(res.data['closing_balance']['cash']), 2000.00)
+        self.assertEqual(float(res.data['fund_summary']['remaining_balance']), 35000.00)
+
+        # 6. Add Personal Expense: ₹3,000 ACCOUNT
+        Transaction.objects.create(
+            profile=self.user.profile,
+            date=date.today(),
+            amount=3000.00,
+            payment_mode='ACCOUNT',
+            transaction_type='EXPENSE',
+            category=self.category,
+            description='Groceries'
+        )
+
+        res = self.client.get(f'/api/reports/daily/?date={today_str}')
+        self.assertEqual(float(res.data['closing_balance']['account']), 7000.00)
+        self.assertEqual(float(res.data['closing_balance']['cash']), 2000.00)
+        self.assertEqual(float(res.data['closing_balance']['total']), 9000.00)
+        self.assertEqual(float(res.data['fund_summary']['remaining_balance']), 35000.00)
+
+
+
 
 
 

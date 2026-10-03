@@ -35,13 +35,10 @@ def recalculate_balances(profile):
             mode = txn.payment_mode
             type = txn.transaction_type
             
-            # Logic
-            # Expense: Reduce
-            # Income: Increase
-            # Debt Taken: Increase
-            # Debt Given: Reduce
-            # Cash Withdrawal: Transfer Account -> Cash
-            
+            # Exclude Fund Management transactions from personal cash & account balances
+            if type in ['FUND_MANAGEMENT_INC', 'FUND_MANAGEMENT_DEC']:
+                continue
+                
             if type == 'CASH_WITHDRAWAL':
                 cash += amount
                 account -= amount
@@ -50,7 +47,7 @@ def recalculate_balances(profile):
                 account += amount
             else:
                 multiplier = 1
-                if type in ['EXPENSE', 'DEBT_GIVEN', 'INVESTMENT', 'DEBT_TAKEN_RETURN', 'FUND_MANAGEMENT_DEC']:
+                if type in ['EXPENSE', 'DEBT_GIVEN', 'INVESTMENT', 'DEBT_TAKEN_RETURN']:
                     multiplier = -1
                 
                 if mode == 'CASH':
