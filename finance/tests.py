@@ -116,6 +116,109 @@ class DebtSettlePersonTestCase(TestCase):
             self.assertEqual(debt.is_cleared, True)
 
 
+class DebtHistoryTestCase(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username='historyuser', password='password123', email='history@example.com')
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.category = Category.objects.create(name="Loan / Debt", profile=self.user.profile)
+        self.ledger = Ledger.objects.create(name="Bob Ledger", profile=self.user.profile)
+
+    def test_debt_history_returns_only_active_debts(self):
+        # Create Debt 1: 500, with partial repayment 200 (Active, remaining 300)
+        debt1 = Debt.objects.create(
+            profile=self.user.profile,
+            person_name="Bob Ledger",
+            ledger=self.ledger,
+            amount=500.00,
+            debt_type='TAKEN',
+            payment_mode='CASH',
+            is_cleared=False,
+            date=date.today() - timedelta(days=5),
+            description="Loan 1"
+        )
+        Transaction.objects.create(
+            profile=self.user.profile,
+            amount=200.00,
+            payment_mode='CASH',
+            transaction_type='DEBT_TAKEN_RETURN',
+            category=self.category,
+            related_debt=debt1,
+            date=date.today() - timedelta(days=2),
+            description="Partial Repayment"
+        )
+
+        # Create Debt 2: 300, fully cleared (is_cleared = True, remaining = 0)
+        debt2 = Debt.objects.create(
+            profile=self.user.profile,
+            person_name="Bob Ledger",
+            ledger=self.ledger,
+            amount=300.00,
+            debt_type='TAKEN',
+            payment_mode='ACCOUNT',
+            is_cleared=False,
+            date=date.today() - timedelta(days=10),
+            description="Loan 2 - Cleared"
+        )
+        Transaction.objects.create(
+            profile=self.user.profile,
+            amount=300.00,
+            payment_mode='ACCOUNT',
+            transaction_type='DEBT_TAKEN_RETURN',
+            category=self.category,
+            related_debt=debt2,
+            date=date.today() - timedelta(days=8),
+            description="Full Repayment"
+        )
+        debt2.refresh_from_db()
+        self.assertTrue(debt2.is_cleared)
+
+        # Request history for Bob Ledger
+        response = self.client.get('/api/debts/history/?person_name=Bob Ledger')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        debts_data = response.data['debts']
+
+        # Only 1 debt should be returned (debt1), debt2 must be excluded
+        self.assertEqual(len(debts_data), 1)
+        active_debt = debts_data[0]
+        self.assertEqual(active_debt['id'], debt1.id)
+        self.assertEqual(active_debt['person_name'], "Bob Ledger")
+        self.assertEqual(active_debt['ledger_name'], "Bob Ledger")
+        self.assertEqual(float(active_debt['amount']), 500.00)
+        self.assertEqual(float(active_debt['total_repaid']), 200.00)
+        self.assertEqual(float(active_debt['remaining_amount']), 300.00)
+        self.assertFalse(active_debt['is_cleared'])
+        self.assertEqual(len(active_debt['repayments']), 1)
+        self.assertEqual(float(active_debt['repayments'][0]['amount']), 200.00)
+
+    def test_debt_history_all_cleared_returns_empty_debts(self):
+        # Create a cleared debt
+        debt = Debt.objects.create(
+            profile=self.user.profile,
+            person_name="Charlie",
+            amount=100.00,
+            debt_type='GIVEN',
+            payment_mode='CASH',
+            is_cleared=False,
+            date=date.today()
+        )
+        Transaction.objects.create(
+            profile=self.user.profile,
+            amount=100.00,
+            payment_mode='CASH',
+            transaction_type='DEBT_GIVEN_RETURN',
+            category=self.category,
+            related_debt=debt,
+            date=date.today()
+        )
+        debt.refresh_from_db()
+        self.assertTrue(debt.is_cleared)
+
+        response = self.client.get('/api/debts/history/?person_name=Charlie')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data['debts']), 0)
+
+
 class FundTestCase(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(username='testuser', password='password123', email='test@example.com')

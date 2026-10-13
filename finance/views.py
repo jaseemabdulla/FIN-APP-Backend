@@ -100,6 +100,67 @@ class DebtViewSet(viewsets.ModelViewSet):
         clean_names = sorted(list(set([name.strip() for name in names if name.strip()])))
         return response.Response(clean_names)
 
+    @action(detail=False, methods=['get'], url_path='history')
+    def history(self, request):
+        """
+        Returns active debt history for a given person (person_name query param).
+        Includes only active/open debts with their full repayment timeline.
+        Excludes fully cleared/closed debts.
+        Only returns debts belonging to the authenticated user's profile.
+        """
+        person_name = request.query_params.get('person_name', '').strip()
+        if not person_name:
+            return response.Response({"error": "person_name query parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        debts = Debt.objects.filter(
+            profile=request.user.profile,
+            is_cleared=False
+        ).filter(
+            Q(person_name=person_name) | Q(ledger__name=person_name)
+        ).select_related('ledger').prefetch_related('repayments').order_by('date', 'id').distinct()
+
+        result = []
+        for debt in debts:
+            total_repaid = debt.repayments.aggregate(Sum('amount'))['amount__sum'] or 0
+            remaining = float(debt.amount) - float(total_repaid)
+
+            if remaining <= 0 or debt.is_cleared:
+                continue
+
+            repayments_data = []
+            for repayment in debt.repayments.order_by('date', 'id'):
+                repayments_data.append({
+                    'id': repayment.id,
+                    'date': repayment.date.strftime('%Y-%m-%d'),
+                    'amount': float(repayment.amount),
+                    'description': repayment.description or '',
+                    'transaction_type': repayment.transaction_type,
+                    'payment_mode': repayment.payment_mode,
+                })
+
+            ledger_name = debt.ledger.name if debt.ledger else debt.person_name
+
+            result.append({
+                'id': debt.id,
+                'person_name': debt.person_name,
+                'ledger_name': ledger_name,
+                'debt_type': debt.debt_type,
+                'amount': float(debt.amount),
+                'date': debt.date.strftime('%Y-%m-%d'),
+                'description': debt.description or '',
+                'payment_mode': debt.payment_mode,
+                'is_cleared': debt.is_cleared,
+                'total_repaid': float(total_repaid),
+                'remaining_amount': remaining,
+                'related_fund': debt.related_fund_id,
+                'repayments': repayments_data,
+            })
+
+        return response.Response({
+            'person_name': person_name,
+            'debts': result,
+        })
+
     @action(detail=False, methods=['post'], url_path='settle-person')
     def settle_person(self, request):
         person_name = request.data.get('person_name')
@@ -325,12 +386,13 @@ class WeeklyReportView(views.APIView):
         total_fund_dec = txns.filter(transaction_type='FUND_MANAGEMENT_DEC').aggregate(Sum('amount'))['amount__sum'] or 0
         net_savings = total_income - total_expense
 
+        # Exclude Fund Management from personal credit/debit totals
         total_credit = txns.filter(
-            transaction_type__in=['INCOME', 'DEBT_TAKEN', 'DEBT_GIVEN_RETURN', 'FUND_MANAGEMENT_INC', 'INVESTMENT_RETURN']
+            transaction_type__in=['INCOME', 'DEBT_TAKEN', 'DEBT_GIVEN_RETURN', 'INVESTMENT_RETURN']
         ).aggregate(Sum('amount'))['amount__sum'] or 0
 
         total_debit = txns.filter(
-            transaction_type__in=['EXPENSE', 'INVESTMENT', 'DEBT_GIVEN', 'DEBT_TAKEN_RETURN', 'FUND_MANAGEMENT_DEC']
+            transaction_type__in=['EXPENSE', 'INVESTMENT', 'DEBT_GIVEN', 'DEBT_TAKEN_RETURN']
         ).aggregate(Sum('amount'))['amount__sum'] or 0
 
         closing_snapshot = BalanceSnapshot.objects.filter(
@@ -347,14 +409,16 @@ class WeeklyReportView(views.APIView):
             remaining_cash = 0
             remaining_account = 0
 
-        stats = txns.values('transaction_type', 'category__name').annotate(total=Sum('amount')).order_by('transaction_type', '-total')
+        # Exclude Fund Management from personal category breakdown
+        personal_txns_weekly = txns.exclude(transaction_type__in=['FUND_MANAGEMENT_INC', 'FUND_MANAGEMENT_DEC'])
+        stats = personal_txns_weekly.values('transaction_type', 'category__name').annotate(total=Sum('amount')).order_by('transaction_type', '-total')
         
         category_stats_formatted = []
         for item in stats:
             txn_type = item['transaction_type']
             cat_name = item['category__name']
             
-            cat_txns = txns.filter(transaction_type=txn_type, category__name=cat_name).order_by('-date')
+            cat_txns = personal_txns_weekly.filter(transaction_type=txn_type, category__name=cat_name).order_by('-date')
             category_stats_formatted.append({
                 "category": cat_name if cat_name else 'Uncategorized',
                 "type": txn_type,
@@ -427,12 +491,13 @@ class YearlyReportView(views.APIView):
         total_fund_dec = txns.filter(transaction_type='FUND_MANAGEMENT_DEC').aggregate(Sum('amount'))['amount__sum'] or 0
         net_savings = total_income - total_expense
 
+        # Exclude Fund Management from personal credit/debit totals
         total_credit = txns.filter(
-            transaction_type__in=['INCOME', 'DEBT_TAKEN', 'DEBT_GIVEN_RETURN', 'FUND_MANAGEMENT_INC', 'INVESTMENT_RETURN']
+            transaction_type__in=['INCOME', 'DEBT_TAKEN', 'DEBT_GIVEN_RETURN', 'INVESTMENT_RETURN']
         ).aggregate(Sum('amount'))['amount__sum'] or 0
 
         total_debit = txns.filter(
-            transaction_type__in=['EXPENSE', 'INVESTMENT', 'DEBT_GIVEN', 'DEBT_TAKEN_RETURN', 'FUND_MANAGEMENT_DEC']
+            transaction_type__in=['EXPENSE', 'INVESTMENT', 'DEBT_GIVEN', 'DEBT_TAKEN_RETURN']
         ).aggregate(Sum('amount'))['amount__sum'] or 0
 
         target_date = date(year, 12, 31)
@@ -450,14 +515,16 @@ class YearlyReportView(views.APIView):
             remaining_cash = 0
             remaining_account = 0
 
-        stats = txns.values('transaction_type', 'category__name').annotate(total=Sum('amount')).order_by('transaction_type', '-total')
+        # Exclude Fund Management from personal category breakdown
+        personal_txns = txns.exclude(transaction_type__in=['FUND_MANAGEMENT_INC', 'FUND_MANAGEMENT_DEC'])
+        stats = personal_txns.values('transaction_type', 'category__name').annotate(total=Sum('amount')).order_by('transaction_type', '-total')
         
         category_stats_formatted = []
         for item in stats:
             txn_type = item['transaction_type']
             cat_name = item['category__name']
             
-            cat_txns = txns.filter(transaction_type=txn_type, category__name=cat_name).order_by('-date')
+            cat_txns = personal_txns.filter(transaction_type=txn_type, category__name=cat_name).order_by('-date')
             category_stats_formatted.append({
                 "category": cat_name if cat_name else 'Uncategorized',
                 "type": txn_type,
@@ -537,14 +604,14 @@ class MonthlyReportView(views.APIView):
         # So we leave Net Savings as Income - Expense.
         net_savings = total_income - total_expense
 
-        # Total credit (all inflows: INCOME, DEBT_TAKEN, DEBT_GIVEN_RETURN, FUND_MANAGEMENT_INC)
+        # Total credit (personal inflows only — excludes Fund Management)
         total_credit = txns.filter(
-            transaction_type__in=['INCOME', 'DEBT_TAKEN', 'DEBT_GIVEN_RETURN', 'FUND_MANAGEMENT_INC', 'INVESTMENT_RETURN']
+            transaction_type__in=['INCOME', 'DEBT_TAKEN', 'DEBT_GIVEN_RETURN', 'INVESTMENT_RETURN']
         ).aggregate(Sum('amount'))['amount__sum'] or 0
 
-        # Total debit (all outflows: EXPENSE, INVESTMENT, DEBT_GIVEN, DEBT_TAKEN_RETURN, FUND_MANAGEMENT_DEC)
+        # Total debit (personal outflows only — excludes Fund Management)
         total_debit = txns.filter(
-            transaction_type__in=['EXPENSE', 'INVESTMENT', 'DEBT_GIVEN', 'DEBT_TAKEN_RETURN', 'FUND_MANAGEMENT_DEC']
+            transaction_type__in=['EXPENSE', 'INVESTMENT', 'DEBT_GIVEN', 'DEBT_TAKEN_RETURN']
         ).aggregate(Sum('amount'))['amount__sum'] or 0
 
         # Remaining balance: closing balance of the last snapshot in the month, or prior fallback
@@ -567,7 +634,9 @@ class MonthlyReportView(views.APIView):
             remaining_account = 0
 
         # Dynamically group category breakdown by transaction type and category
-        stats = txns.values('transaction_type', 'category__name').annotate(total=Sum('amount')).order_by('transaction_type', '-total')
+        # Exclude Fund Management transactions from personal reports
+        personal_txns = txns.exclude(transaction_type__in=['FUND_MANAGEMENT_INC', 'FUND_MANAGEMENT_DEC'])
+        stats = personal_txns.values('transaction_type', 'category__name').annotate(total=Sum('amount')).order_by('transaction_type', '-total')
         
         category_stats_formatted = []
         for item in stats:
@@ -575,7 +644,7 @@ class MonthlyReportView(views.APIView):
             cat_name = item['category__name']
             
             # Fetch the transactions for this specific type and category
-            cat_txns = txns.filter(transaction_type=txn_type, category__name=cat_name).order_by('-date')
+            cat_txns = personal_txns.filter(transaction_type=txn_type, category__name=cat_name).order_by('-date')
             category_stats_formatted.append({
                 "category": cat_name if cat_name else 'Uncategorized',
                 "type": txn_type,
